@@ -2,6 +2,11 @@
 # Gradle wrapper's shell script keeps a valid shebang on every platform.
 * text=auto eol=lf
 
+# Windows batch scripts (android/gradlew.bat) need CRLF in the working tree;
+# the POSIX wrapper stays LF explicitly.
+*.bat   text eol=crlf
+gradlew text eol=lf
+
 # Binaries: never converted or diffed.
 *.png binary
 *.jpg binary
