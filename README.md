@@ -183,7 +183,9 @@ allow-lists derive from it. See
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The upstream ompweb project is MIT-licensed as
-well; this repository only contains the Android client and its documentation.
+MIT — see [LICENSE](LICENSE): copyright (c) 2026 ompweb-android contributors.
+The upstream ompweb project is MIT-licensed as well (see
+[kahme247/ompweb](https://github.com/kahme247/ompweb)); this repository only
+contains the Android client and its documentation.
 
 Security reports: see [SECURITY.md](SECURITY.md).
