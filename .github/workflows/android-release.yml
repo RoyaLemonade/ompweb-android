@@ -98,8 +98,6 @@ jobs:
         id: verify
         run: |
           set -euo pipefail
-          apk=app/build/outputs/apk/release/app-release.apk
-          test -f "$apk"
 
           # The tag names the release, the APK's manifest names the build. A
           # tag on an un-bumped tree would publish ompweb-1.0.1.apk containing
@@ -117,6 +115,11 @@ jobs:
             echo "::error::$GITHUB_REF_NAME is not an android-v<major>.<minor>.<patch> tag"
             exit 1
           fi
+
+          # The release build names its output after the version
+          # (`outputFileName` in app/build.gradle.kts), not app-release.apk.
+          apk="app/build/outputs/apk/release/ompweb-$version.apk"
+          test -f "$apk"
           # The exact build-tools the workflow installs, not whatever another
           # SDK package left behind in the runner image.
           aapt2="$ANDROID_HOME/build-tools/$RELEASE_BUILD_TOOLS/aapt2"
