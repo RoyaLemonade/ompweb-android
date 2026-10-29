@@ -20,8 +20,7 @@ jobs:
       run:
         working-directory: android
     steps:
-      # Every action is pinned to a commit SHA (same rule as
-      # android-release.yml/publish.yml/verify-pr.yml).
+      # Every action is pinned to a commit SHA (same rule as android-release.yml).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
