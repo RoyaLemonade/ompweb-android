@@ -274,25 +274,6 @@ class ApiClient(
         )
     }
 
-    /**
-     * Persists one whole-list order as a single atomic batched PATCH — the
-     * server applies every entry in one registry save, so a drag reorder can
-     * never interleave with another writer (`app/api/projects/route.ts` PATCH).
-     */
-    suspend fun reorderProjects(paths: List<String>) = withContext(Dispatchers.IO) {
-        val updates = buildJsonArray {
-            paths.forEachIndexed { index, path ->
-                add(
-                    buildJsonObject {
-                        put("cwd", path)
-                        put("sortOrder", JsonPrimitive(index))
-                    },
-                )
-            }
-        }
-        patchProject(buildJsonObject { put("updates", updates) })
-    }
-
     suspend fun deleteProject(cwd: String) = withContext(Dispatchers.IO) {
         val payload = buildJsonObject { put("cwd", cwd) }
         val response = perform(postJson("api/projects", payload.toString(), method = "DELETE"))

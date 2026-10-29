@@ -495,6 +495,9 @@ class AppContainer(context: Context) {
         serverInfoRequested = false
         hostTools.reset()
         draftStore.clearAll()
+        // Project pins name paths of the installation being left; the next
+        // server has its own registry, so its pins start empty.
+        settings.clearPinnedProjects()
         // The list and the transcripts belong to the installation that is being
         // left: nothing of it may paint the next server's workspace.
         withContext(Dispatchers.IO) { sessionCache.clearAll() }

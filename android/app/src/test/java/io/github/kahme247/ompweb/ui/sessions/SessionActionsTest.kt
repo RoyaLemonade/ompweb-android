@@ -495,6 +495,16 @@ class SessionActionsTest {
             }
         }
 
+        override suspend fun setPinnedProjects(origin: String, paths: List<String>) {
+            state.update {
+                it.copy(
+                    pinnedProjectsByOrigin = it.pinnedProjectsByOrigin.toMutableMap().apply {
+                        if (paths.isEmpty()) remove(origin) else put(origin, paths)
+                    },
+                )
+            }
+        }
+
         override suspend fun setToolPreset(preset: ToolPreset) {
             state.update { it.copy(toolPreset = preset.wireName) }
         }

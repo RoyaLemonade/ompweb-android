@@ -2,6 +2,7 @@ package io.github.kahme247.ompweb.domain
 
 import io.github.kahme247.ompweb.net.ManagedProject
 import io.github.kahme247.ompweb.net.SessionSummary
+import java.time.Instant
 
 /**
  * Pure ordering/grouping helpers shared by the sidebar.
@@ -12,11 +13,11 @@ import io.github.kahme247.ompweb.net.SessionSummary
  * (worktrees collapse into their main repo via the server), so worktree
  * sessions group under their project.
  *
- * The project list is ordered by when each project was added (addedAt desc =
- * most recently added first), NOT by session activity: activity changes on
- * every session refresh and would make project rows jump around constantly.
- * Session-discovered projects (no addedAt) follow registered ones in path
- * order, which is also stable.
+ * The project list follows activity: pinned projects first (in pin order),
+ * then projects with a running chat, then by the newest session timestamp.
+ * Because that order changes while the user looks at it, the rendered list is
+ * frozen while the user interacts and only adopts a new order after
+ * [PROJECT_ORDER_SETTLE_MILLIS] of quiet ([ProjectOrderHold]).
  */
 
 private val WINDOWS_ABSOLUTE_RE = Regex("""^[a-zA-Z]:[\\/]""")
@@ -38,30 +39,159 @@ fun comparableProjectPath(value: String): String {
 fun workspaceKeyOf(session: SessionSummary): String? =
     session.projectKey ?: session.projectRoot ?: session.cwd
 
+/** How long the list must stay untouched before a new project order is shown. */
+const val PROJECT_ORDER_SETTLE_MILLIS: Long = 1_500L
+
 /**
- * Sort projects by most-recently-added (addedAt desc), manual order first,
- * then by path for a deterministic order. Projects without addedAt
- * (session-discovered) always sort below registered ones. The order never
- * depends on session activity.
+ * Newest session timestamp per project (`modified`, epoch millis), keyed by
+ * the case-folded comparable project path. A malformed timestamp is ignored,
+ * so a broken session file never lifts its project to the top.
  */
-fun sortManagedProjects(projects: List<ManagedProject>): List<ManagedProject> = projects.sortedWith { a, b ->
-    val aManual = a.sortOrder != null
-    val bManual = b.sortOrder != null
-    when {
-        aManual != bManual -> if (aManual) -1 else 1
-        aManual && bManual && a.sortOrder != b.sortOrder -> a.sortOrder!! - b.sortOrder!!
-        else -> {
-            val aHas = a.addedAt != null
-            val bHas = b.addedAt != null
-            when {
-                aHas != bHas -> if (aHas) -1 else 1
-                aHas && bHas -> {
-                    val byAdded = b.addedAt!!.compareTo(a.addedAt!!)
-                    if (byAdded != 0) byAdded else a.path.compareTo(b.path)
-                }
-                else -> a.path.compareTo(b.path)
+fun projectLastActivity(sessions: List<SessionSummary>): Map<String, Long> {
+    val result = LinkedHashMap<String, Long>()
+    for (session in sessions) {
+        val key = workspaceKeyOf(session) ?: continue
+        val at = parseSessionInstant(session.modified) ?: continue
+        val folded = comparableProjectPath(key)
+        val current = result[folded]
+        if (current == null || at > current) result[folded] = at
+    }
+    return result
+}
+
+private fun parseSessionInstant(value: String): Long? {
+    if (value.isBlank()) return null
+    return runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
+}
+
+private class ProjectOrderEntry(
+    val project: ManagedProject,
+    /** Incoming position; the stable tie-break of every group. */
+    val position: Int,
+    val pin: Int?,
+    val running: Boolean,
+    val activity: Long,
+)
+
+/**
+ * Activity order for the project list:
+ *
+ * 1. pinned projects, in [pinnedPaths] order (most recently pinned first),
+ * 2. projects with a running session ([runningProjects], this server or
+ *    another omp process),
+ * 3. everything else by [lastActivity], newest first.
+ *
+ * Ties keep the incoming order, so equal timestamps and projects without
+ * sessions never shuffle between refreshes.
+ */
+fun orderProjectsByActivity(
+    projects: List<ManagedProject>,
+    pinnedPaths: List<String>,
+    runningProjects: Collection<String>,
+    lastActivity: Map<String, Long>,
+): List<ManagedProject> {
+    if (projects.size < 2) return projects
+    val pinIndex = HashMap<String, Int>()
+    pinnedPaths.forEachIndexed { index, path ->
+        val key = comparableProjectPath(path)
+        if (key.isNotEmpty()) pinIndex.putIfAbsent(key, index)
+    }
+    val running = runningProjects.mapTo(HashSet(), ::comparableProjectPath)
+    val entries = projects.mapIndexed { position, project ->
+        val key = comparableProjectPath(project.path)
+        ProjectOrderEntry(
+            project = project,
+            position = position,
+            pin = pinIndex[key],
+            running = key in running,
+            activity = lastActivity[key] ?: Long.MIN_VALUE,
+        )
+    }
+    return entries.sortedWith { a, b ->
+        when {
+            a.pin != null && b.pin != null -> {
+                val byPin = a.pin.compareTo(b.pin)
+                if (byPin != 0) byPin else a.position.compareTo(b.position)
             }
+            a.pin != null -> -1
+            b.pin != null -> 1
+            a.running != b.running -> if (a.running) -1 else 1
+            a.activity != b.activity -> if (a.activity > b.activity) -1 else 1
+            else -> a.position.compareTo(b.position)
         }
+    }.map { it.project }
+}
+
+/**
+ * Re-orders [projects] into the frozen [orderPaths] without resurrecting
+ * projects that left the list: projects named there come in that order,
+ * everything else (a project just added, or one whose path casing changed)
+ * follows in its incoming order.
+ */
+fun applyProjectOrder(projects: List<ManagedProject>, orderPaths: List<String>): List<ManagedProject> {
+    if (projects.isEmpty() || orderPaths.isEmpty()) return projects
+    val rank = HashMap<String, Int>()
+    orderPaths.forEachIndexed { index, path ->
+        rank.putIfAbsent(comparableProjectPath(path), index)
+    }
+    return projects.sortedWith(compareBy { rank[comparableProjectPath(it.path)] ?: Int.MAX_VALUE })
+}
+
+/**
+ * Keeps the rendered project order stable while the user is busy.
+ *
+ * The list is frozen while [beginInteraction] has been called more often than
+ * [endInteraction] (touch, scroll, drag, open row menu, active search field)
+ * and for [settleMillis] after the last interaction ended. A new order is
+ * adopted only afterwards, so rows never jump under a finger. Times are
+ * passed in by the caller, which keeps the decision pure and testable.
+ */
+class ProjectOrderHold(private val settleMillis: Long = PROJECT_ORDER_SETTLE_MILLIS) {
+    private var shown: List<String>? = null
+    private var interactionDepth = 0
+    private var interactionEndMillis: Long? = null
+
+    val interacting: Boolean get() = interactionDepth > 0
+
+    fun beginInteraction() {
+        interactionDepth++
+    }
+
+    fun endInteraction(nowMillis: Long) {
+        if (interactionDepth == 0) return
+        interactionDepth--
+        if (interactionDepth == 0) interactionEndMillis = nowMillis
+    }
+
+    /**
+     * The order to render for [desired] at [nowMillis]: the frozen order while
+     * interacting or settling, [desired] otherwise (and on the first call,
+     * where there is nothing to freeze yet).
+     */
+    fun order(desired: List<String>, nowMillis: Long): List<String> {
+        val current = shown
+        if (current == null) {
+            shown = desired
+            return desired
+        }
+        if (isFrozen(nowMillis)) return current
+        shown = desired
+        return desired
+    }
+
+    /** Milliseconds until a pending settle window lifts, or null when none is pending. */
+    fun settleDelayMillis(nowMillis: Long): Long? {
+        if (interactionDepth > 0) return null
+        val ended = interactionEndMillis ?: return null
+        return (settleMillis - (nowMillis - ended)).coerceAtLeast(0L)
+    }
+
+    private fun isFrozen(nowMillis: Long): Boolean {
+        if (interactionDepth > 0) return true
+        val ended = interactionEndMillis ?: return false
+        if (nowMillis - ended < settleMillis) return true
+        interactionEndMillis = null
+        return false
     }
 }
 

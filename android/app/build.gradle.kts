@@ -31,8 +31,8 @@ val updateReleasesRepo = "RoyaLemonade/ompweb-android"
 // increasing integer, never reused, so every release installs over the
 // previous one. The update server's latest.json sidecar is generated from
 // these two values by writeReleaseSidecar.
-val ompWebVersionName = "1.0.17"
-val ompWebVersionCode = 10017
+val ompWebVersionName = "1.0.18"
+val ompWebVersionCode = 10018
 
 android {
     namespace = "io.github.kahme247.ompweb"

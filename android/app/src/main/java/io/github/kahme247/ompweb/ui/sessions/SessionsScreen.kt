@@ -7,7 +7,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -65,9 +66,11 @@ import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffold
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -78,6 +81,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
@@ -89,7 +93,6 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -113,6 +116,10 @@ import io.github.kahme247.ompweb.domain.TextAttachmentBudget
 import io.github.kahme247.ompweb.domain.mergeImageAttachments
 import io.github.kahme247.ompweb.domain.selectTextAttachments
 import io.github.kahme247.ompweb.domain.ProjectActivity
+import io.github.kahme247.ompweb.domain.ProjectOrderHold
+import io.github.kahme247.ompweb.domain.applyProjectOrder
+import io.github.kahme247.ompweb.domain.orderProjectsByActivity
+import io.github.kahme247.ompweb.domain.projectLastActivity
 import io.github.kahme247.ompweb.domain.ColdStartRestoreStep
 import io.github.kahme247.ompweb.domain.coldStartRestoreStep
 import io.github.kahme247.ompweb.domain.comparableProjectPath
@@ -140,7 +147,6 @@ import io.github.kahme247.ompweb.ui.theme.OmpDropdownMenu
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -699,8 +705,7 @@ fun SessionsScreen(
                         onRenameProject = { renameProjectTarget = it },
                         onLaunchConfig = { launchConfigTarget = it },
                         onHideProject = { hideProjectTarget = it },
-                        onMoveProject = viewModel::moveProjectBy,
-                        onMoveProjectTo = viewModel::moveProjectTo,
+                        onToggleProjectPin = viewModel::toggleProjectPin,
                         onRenameSession = { renameSessionTarget = it },
                         onArchiveSession = viewModel::archiveSession,
                         onAutoNameSession = viewModel::autoNameSession,
@@ -1097,8 +1102,7 @@ internal fun SessionListPane(
     onRenameProject: (ManagedProject) -> Unit,
     onLaunchConfig: (ManagedProject) -> Unit,
     onHideProject: (ManagedProject) -> Unit,
-    onMoveProject: (String, Int) -> Unit,
-    onMoveProjectTo: (String, Int) -> Unit,
+    onToggleProjectPin: (String) -> Unit,
     onRenameSession: (SessionSummary) -> Unit,
     onArchiveSession: (String) -> Unit,
     onAutoNameSession: (String) -> Unit,
@@ -1150,15 +1154,45 @@ internal fun SessionListPane(
     // session: the ones this server drives and the ones another omp process
     // owns. Unread badges and notifications stay on `runningIds` alone.
     val liveIds = remember(state.runningIds, elsewhereIds) { state.runningIds + elsewhereIds.toList() }
-    val visibleEntries = remember(
+    val activities = remember(displaySessions, liveIds, state.unreadIds, state.exited) {
+        projectActivityCounts(displaySessions, liveIds, state.unreadIds, state.exited.keys)
+    }
+    // Activity order: pinned projects first, then running ones, then the
+    // newest session. Because that order changes with every refresh, the
+    // rendered order is frozen while the user is busy: [frozenOrderPaths]
+    // holds the order currently on screen and only adopts a new one after the
+    // settle window (pure decision in `ProjectOrderHold`).
+    var frozenOrderPaths by remember { mutableStateOf<List<String>?>(null) }
+    val runningProjectPaths = remember(activities) {
+        activities.filterValues { it.running > 0 }.keys
+    }
+    val lastActivity = remember(displaySessions) { projectLastActivity(displaySessions) }
+    val desiredProjects = remember(
         displayProjects,
+        state.pinnedProjectPaths,
+        runningProjectPaths,
+        lastActivity,
+    ) {
+        orderProjectsByActivity(
+            projects = displayProjects,
+            pinnedPaths = state.pinnedProjectPaths,
+            runningProjects = runningProjectPaths,
+            lastActivity = lastActivity,
+        )
+    }
+    val desiredOrderPaths = remember(desiredProjects) { desiredProjects.map { it.path } }
+    val orderedProjects = remember(desiredProjects, frozenOrderPaths) {
+        applyProjectOrder(desiredProjects, frozenOrderPaths ?: emptyList())
+    }
+    val visibleEntries = remember(
+        orderedProjects,
         allGrouped,
         liveIds,
         state.searchQuery,
         state.runningOnly,
     ) {
         visibleSessionEntries(
-            projects = displayProjects,
+            projects = orderedProjects,
             sessionsByProject = allGrouped,
             runningOnly = state.runningOnly,
             runningIds = liveIds,
@@ -1175,58 +1209,44 @@ internal fun SessionListPane(
     val pinnedSessions = remember(displaySessions, visibleSessions, state.pinnedIds, filterActive) {
         (if (filterActive) visibleSessions else displaySessions).filter { it.id in state.pinnedIds }
     }
-    val activities = remember(displaySessions, liveIds, state.unreadIds, state.exited) {
-        projectActivityCounts(displaySessions, liveIds, state.unreadIds, state.exited.keys)
-    }
     val listState = rememberLazyListState()
-    val edgeScrollPx = with(LocalDensity.current) { 56.dp.toPx() }
-    var draggingPath by remember { mutableStateOf<String?>(null) }
-    var dragOffset by remember { mutableStateOf(0f) }
-    var dragLocalY by remember { mutableStateOf(0f) }
-    var dropIndex by remember { mutableStateOf(-1) }
+    val listInteraction = remember { SessionListInteraction() }
+    val orderHold = remember { ProjectOrderHold() }
+    var orderTick by remember { mutableIntStateOf(0) }
+    var settleTick by remember { mutableIntStateOf(0) }
+    // Scroll, open row menus and the search field are Compose state; a finger
+    // on the list is reported by the pointer tracker on the list itself.
+    val interactingWithList = listState.isScrollInProgress ||
+        listInteraction.menuOpen ||
+        state.searchOpen
 
-    fun finishDrag() {
-        val path = draggingPath
-        if (path != null) {
-            // dropIndex is an index into the rendered projects; the move itself
-            // takes the position in the full project order. Ending on the
-            // dragged row itself (a long press without dragging) moves nothing.
-            val targetPath = dropTargetPath(visibleProjects.map { it.path }, dropIndex, path)
-            val target = displayProjects.indexOfFirst { it.path == targetPath }
-            if (targetPath != null && target >= 0) onMoveProjectTo(path, target)
+    // One begin/end pair per interaction stretch, so the gate's depth stays
+    // balanced across recompositions and leaves.
+    DisposableEffect(interactingWithList) {
+        if (interactingWithList) {
+            orderHold.beginInteraction()
+            onDispose { orderHold.endInteraction(System.currentTimeMillis()) }
+        } else {
+            onDispose {}
         }
-        draggingPath = null
-        dragOffset = 0f
-        dragLocalY = 0f
-        dropIndex = -1
     }
 
-    // Keep a long list reachable while dragging: the web scrolls under the
-    // pointer, and without this a target below the viewport cannot be hit.
-    LaunchedEffect(draggingPath) {
-        val path = draggingPath ?: return@LaunchedEffect
-        while (isActive) {
-            val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == path }
-            if (info != null) {
-                val pointerY = info.offset + dragLocalY
-                val viewport = listState.layoutInfo
-                val delta = when {
-                    pointerY < viewport.viewportStartOffset + edgeScrollPx -> -edgeScrollPx
-                    pointerY > viewport.viewportEndOffset - edgeScrollPx -> edgeScrollPx
-                    else -> 0f
-                }
-                if (delta != 0f) {
-                    listState.scrollBy(delta)
-                    val target = dropTargetKey(
-                        viewport.visibleItemsInfo.map { DragItemBounds(it.key.toString(), it.offset, it.size) },
-                        info.offset + dragLocalY,
-                    )
-                    val targetIndex = visibleProjects.indexOfFirst { it.path == target }
-                    if (targetIndex >= 0) dropIndex = targetIndex
-                }
-            }
-            delay(16)
+    // Adopt the pending order once the list has been quiet long enough. A
+    // stretch of Compose-tracked interaction re-arms it on its end; a finger
+    // on the list does so through [settleTick].
+    LaunchedEffect(interactingWithList, settleTick) {
+        if (interactingWithList) return@LaunchedEffect
+        while (true) {
+            val wait = orderHold.settleDelayMillis(System.currentTimeMillis()) ?: break
+            if (wait <= 0L) break
+            delay(wait)
         }
+        orderTick++
+    }
+
+    LaunchedEffect(desiredOrderPaths, orderTick) {
+        val next = orderHold.order(desiredOrderPaths, System.currentTimeMillis())
+        if (frozenOrderPaths != next) frozenOrderPaths = next
     }
 
     Scaffold(
@@ -1514,11 +1534,66 @@ internal fun SessionListPane(
                             modifier = Modifier.padding(24.dp),
                         )
     
-                        else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                            if (pinnedSessions.isNotEmpty()) {
-                                item(key = "pinned-sessions") {
-                                    PinnedSection(
-                                        sessions = pinnedSessions,
+                        else -> CompositionLocalProvider(LocalSessionListInteraction provides listInteraction) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(orderHold) {
+                                        // Freeze the order while a finger is on the
+                                        // list, before the first scroll arrives.
+                                        awaitEachGesture {
+                                            awaitFirstDown(requireUnconsumed = false)
+                                            orderHold.beginInteraction()
+                                            do {
+                                                val event = awaitPointerEvent()
+                                            } while (event.changes.any { it.pressed })
+                                            orderHold.endInteraction(System.currentTimeMillis())
+                                            settleTick++
+                                        }
+                                    },
+                            ) {
+                                if (pinnedSessions.isNotEmpty()) {
+                                    item(key = "pinned-sessions") {
+                                        PinnedSection(
+                                            sessions = pinnedSessions,
+                                            now = now,
+                                            runningIds = state.runningIds,
+                                            unreadIds = state.unreadIds,
+                                            exitedIds = state.exited.keys,
+                                            elsewhereIds = elsewhereIds,
+                                            selectedSessionId = state.selectedSessionId,
+                                            namingSessionId = state.autoName.sessionId
+                                                ?.takeIf { state.autoName.phase == AutoNamePhase.Naming },
+                                            onSelectSession = onOpenSession,
+                                            onTogglePin = { onTogglePin(it.id) },
+                                            onRenameSession = onRenameSession,
+                                            onArchiveSession = { onArchiveSession(it.id) },
+                                            onAutoName = { onAutoNameSession(it.id) },
+                                            onCopyTranscript = onCopyTranscript,
+                                            onExportSession = onExportSession,
+                                            onDeleteSession = onDeleteSession,
+                                            onCopyId = onCopyId,
+                                        )
+                                    }
+                                }
+                                itemsIndexed(items = visibleProjects, key = { _, project -> project.path }) { _, project ->
+                                    val projectSessions = grouped[project.path].orEmpty()
+                                    val activity = activities[comparableProjectPath(project.path)] ?: ProjectActivity()
+                                    val expandedKey = comparableProjectPath(project.path)
+                                    val defaultKey = comparableProjectPath(
+                                        state.activeCwd ?: orderedProjects.firstOrNull()?.path.orEmpty(),
+                                    )
+                                    val expanded = filterActive ||
+                                        state.expandedProjects?.contains(expandedKey) == true ||
+                                        (state.expandedProjects == null && expandedKey == defaultKey)
+                                    ProjectBlock(
+                                        project = project,
+                                        allProjectSessions = allGrouped[project.path].orEmpty(),
+                                        visibleSessions = projectSessions,
+                                        activity = activity,
+                                        expanded = expanded,
+                                        filterActive = filterActive,
                                         now = now,
                                         runningIds = state.runningIds,
                                         unreadIds = state.unreadIds,
@@ -1527,102 +1602,29 @@ internal fun SessionListPane(
                                         selectedSessionId = state.selectedSessionId,
                                         namingSessionId = state.autoName.sessionId
                                             ?.takeIf { state.autoName.phase == AutoNamePhase.Naming },
-                                        onSelectSession = onOpenSession,
+                                        pinnedIds = state.pinnedIds,
+                                        pinned = state.pinnedProjectPaths.any {
+                                            comparableProjectPath(it) == comparableProjectPath(project.path)
+                                        },
+                                        onToggle = { onToggleProject(project.path) },
+                                        onActivate = { onActivateProject(project.path) },
+                                        onNewSession = { onNewSessionInProject(project.path) },
                                         onTogglePin = { onTogglePin(it.id) },
+                                        onRenameProject = { onRenameProject(project) },
+                                        onLaunchConfig = { onLaunchConfig(project) },
+                                        onTogglePinProject = { onToggleProjectPin(project.path) },
+                                        onHide = { onHideProject(project) },
+                                        onSelectSession = onOpenSession,
                                         onRenameSession = onRenameSession,
-                                        onArchiveSession = { onArchiveSession(it.id) },
-                                        onAutoName = { onAutoNameSession(it.id) },
+                                        onArchiveSession = { session -> onArchiveSession(session.id) },
+                                        onAutoName = { session -> onAutoNameSession(session.id) },
                                         onCopyTranscript = onCopyTranscript,
                                         onExportSession = onExportSession,
                                         onDeleteSession = onDeleteSession,
                                         onCopyId = onCopyId,
                                     )
+                                    HorizontalDivider(color = colors.border)
                                 }
-                            }
-                            itemsIndexed(items = visibleProjects, key = { _, project -> project.path }) { index, project ->
-                                val projectSessions = grouped[project.path].orEmpty()
-                                val activity = activities[comparableProjectPath(project.path)] ?: ProjectActivity()
-                                val expandedKey = comparableProjectPath(project.path)
-                                val defaultKey = comparableProjectPath(
-                                    state.activeCwd ?: displayProjects.firstOrNull()?.path.orEmpty(),
-                                )
-                                val expanded = filterActive ||
-                                    state.expandedProjects?.contains(expandedKey) == true ||
-                                    (state.expandedProjects == null && expandedKey == defaultKey)
-                                ProjectBlock(
-                                    project = project,
-                                    allProjectSessions = allGrouped[project.path].orEmpty(),
-                                    visibleSessions = projectSessions,
-                                    activity = activity,
-                                    expanded = expanded,
-                                    filterActive = filterActive,
-                                    now = now,
-                                    runningIds = state.runningIds,
-                                    unreadIds = state.unreadIds,
-                                    exitedIds = state.exited.keys,
-                                    elsewhereIds = elsewhereIds,
-                                    selectedSessionId = state.selectedSessionId,
-                                    namingSessionId = state.autoName.sessionId
-                                        ?.takeIf { state.autoName.phase == AutoNamePhase.Naming },
-                                    pinnedIds = state.pinnedIds,
-                                    dragging = draggingPath == project.path,
-                                    dragOffset = dragOffset,
-                                    dropHighlight = draggingPath != null &&
-                                        draggingPath != project.path && index == dropIndex,
-                                    onToggle = { onToggleProject(project.path) },
-                                    onActivate = { onActivateProject(project.path) },
-                                    onNewSession = { onNewSessionInProject(project.path) },
-                                    onTogglePin = { onTogglePin(it.id) },
-                                    onRenameProject = { onRenameProject(project) },
-                                    onLaunchConfig = { onLaunchConfig(project) },
-                                    onMoveUp = { onMoveProject(project.path, -1) },
-                                    onMoveDown = { onMoveProject(project.path, 1) },
-                                    onHide = { onHideProject(project) },
-                                    onDragStart = { pointerY ->
-                                        draggingPath = project.path
-                                        dragOffset = 0f
-                                        dragLocalY = pointerY
-                                        // `itemsIndexed(visibleProjects)` counts the
-                                        // projects, not the lazy items: the pinned
-                                        // header is a separate item and must not
-                                        // shift the drop index.
-                                        dropIndex = index
-                                    },
-                                    onDrag = { delta, pointerY ->
-                                        dragOffset += delta
-                                        dragLocalY = pointerY
-                                        val info = listState.layoutInfo.visibleItemsInfo
-                                            .firstOrNull { it.key == project.path }
-                                        if (info != null) {
-                                            val target = dropTargetKey(
-                                                listState.layoutInfo.visibleItemsInfo.map {
-                                                    DragItemBounds(it.key.toString(), it.offset, it.size)
-                                                },
-                                                info.offset + pointerY,
-                                            )
-                                            val targetIndex = visibleProjects.indexOfFirst {
-                                                it.path == target
-                                            }
-                                            if (targetIndex >= 0) dropIndex = targetIndex
-                                        }
-                                    },
-                                    onDragEnd = { finishDrag() },
-                                    onDragCancel = {
-                                        draggingPath = null
-                                        dragOffset = 0f
-                                        dragLocalY = 0f
-                                        dropIndex = -1
-                                    },
-                                    onSelectSession = onOpenSession,
-                                    onRenameSession = onRenameSession,
-                                    onArchiveSession = { session -> onArchiveSession(session.id) },
-                                    onAutoName = { session -> onAutoNameSession(session.id) },
-                                    onCopyTranscript = onCopyTranscript,
-                                    onExportSession = onExportSession,
-                                    onDeleteSession = onDeleteSession,
-                                    onCopyId = onCopyId,
-                                )
-                                HorizontalDivider(color = colors.border)
                             }
                         }
                     }

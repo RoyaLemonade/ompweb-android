@@ -17,6 +17,12 @@ interface WorkspacePreferences {
     /** Pins for one server origin; an empty set removes that origin's entry. */
     suspend fun setPinnedSessions(origin: String, ids: Set<String>)
 
+    /**
+     * Project pins for one server origin, in pin order (most recently pinned
+     * first); an empty list removes that origin's entry.
+     */
+    suspend fun setPinnedProjects(origin: String, paths: List<String>)
+
     suspend fun setToolPreset(preset: ToolPreset)
 
     /**

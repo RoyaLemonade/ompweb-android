@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,7 +29,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,8 +40,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -47,7 +47,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.domain.MAX_PROJECT_SESSIONS
 import io.github.kahme247.ompweb.domain.ProjectActivity
@@ -61,9 +60,42 @@ import io.github.kahme247.ompweb.ui.theme.OmpDropdownMenu
 import java.time.Instant
 
 /**
+ * Which parts of the session list the user is busy with right now. The pane
+ * owns the scroll state and the search field; row menus report through
+ * [ReportMenuOpen]. The project order freezes while any of them is active, so
+ * a row never jumps under a finger or out from under an open menu.
+ */
+internal class SessionListInteraction {
+    var openMenus by mutableIntStateOf(0)
+        private set
+
+    val menuOpen: Boolean get() = openMenus > 0
+
+    fun menuOpened() {
+        openMenus++
+    }
+
+    fun menuClosed() {
+        if (openMenus > 0) openMenus--
+    }
+}
+
+internal val LocalSessionListInteraction = compositionLocalOf<SessionListInteraction?> { null }
+
+/** Reports one row's menu to the list's interaction holder. */
+@Composable
+private fun ReportMenuOpen(open: Boolean) {
+    val interaction = LocalSessionListInteraction.current ?: return
+    DisposableEffect(open) {
+        if (open) interaction.menuOpened()
+        onDispose { if (open) interaction.menuClosed() }
+    }
+}
+
+/**
  * One project card plus its fork tree, ported from `components/SessionSidebar`
- * and `SessionSidebar-rows.tsx`: activity badges, expansion, long-press drag
- * reorder, the five-root cap with "Show more", and the per-session action menu.
+ * and `SessionSidebar-rows.tsx`: activity badges, expansion, the five-root cap
+ * with "Show more", the project action menu and the per-session action menu.
  */
 @Composable
 internal fun ProjectBlock(
@@ -84,21 +116,15 @@ internal fun ProjectBlock(
     namingSessionId: String?,
     /** Sessions pinned for this origin; pinned rows offer "Unpin". */
     pinnedIds: Set<String>,
-    dragging: Boolean,
-    dragOffset: Float,
-    dropHighlight: Boolean,
+    /** This project is pinned for the origin; the menu offers "Unpin". */
+    pinned: Boolean,
     onToggle: () -> Unit,
     onActivate: () -> Unit,
     onNewSession: () -> Unit,
     onRenameProject: () -> Unit,
     onLaunchConfig: () -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
+    onTogglePinProject: () -> Unit,
     onHide: () -> Unit,
-    onDragStart: (pointerY: Float) -> Unit,
-    onDrag: (deltaY: Float, pointerY: Float) -> Unit,
-    onDragEnd: () -> Unit,
-    onDragCancel: () -> Unit,
     onSelectSession: (String) -> Unit,
     onTogglePin: (SessionSummary) -> Unit,
     onRenameSession: (SessionSummary) -> Unit,
@@ -111,6 +137,7 @@ internal fun ProjectBlock(
 ) {
     val colors = LocalOmpColors.current
     var projectMenuOpen by remember(project.path) { mutableStateOf(false) }
+    ReportMenuOpen(projectMenuOpen)
     var showAllRoots by remember(project.path) { mutableStateOf(false) }
     val collapsedNodes = remember(project.path) { mutableStateMapOf<String, Boolean>() }
     val roots = remember(visibleSessions) { buildSessionTree(visibleSessions) }
@@ -118,32 +145,17 @@ internal fun ProjectBlock(
         allProjectSessions.mapNotNull { it.parentSessionId }.toSet()
     }
     val shownRoots = if (filterActive || showAllRoots) roots else roots.take(MAX_PROJECT_SESSIONS)
-    val canDrag = !filterActive
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .zIndex(if (dragging) 1f else 0f)
-            .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
-            .background(if (dropHighlight) colors.selected else colors.background),
+            .background(colors.background),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onActivate)
-                .pointerInput(project.path, canDrag) {
-                    if (!canDrag) return@pointerInput
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { offset -> onDragStart(offset.y) },
-                        onDrag = { change, amount ->
-                            change.consume()
-                            onDrag(amount.y, change.position.y)
-                        },
-                        onDragEnd = { onDragEnd() },
-                        onDragCancel = { onDragCancel() },
-                    )
-                }
                 .padding(start = 8.dp, end = 4.dp, top = 10.dp, bottom = 6.dp),
         ) {
             // The web splits the header into an identity button (activate +
@@ -184,6 +196,13 @@ internal fun ProjectBlock(
                 }
                 OmpDropdownMenu(expanded = projectMenuOpen, onDismissRequest = { projectMenuOpen = false }) {
                     DropdownMenuItem(
+                        text = { Text(stringResource(if (pinned) R.string.project_unpin else R.string.project_pin)) },
+                        onClick = {
+                            projectMenuOpen = false
+                            onTogglePinProject()
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text(stringResource(R.string.project_new_session)) },
                         onClick = {
                             projectMenuOpen = false
@@ -202,20 +221,6 @@ internal fun ProjectBlock(
                         onClick = {
                             projectMenuOpen = false
                             onLaunchConfig()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.project_move_up)) },
-                        onClick = {
-                            projectMenuOpen = false
-                            onMoveUp()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.project_move_down)) },
-                        onClick = {
-                            projectMenuOpen = false
-                            onMoveDown()
                         },
                     )
                     DropdownMenuItem(
@@ -510,6 +515,7 @@ internal fun SessionRow(
 ) {
     val colors = LocalOmpColors.current
     var menuOpen by remember(session.id) { mutableStateOf(false) }
+    ReportMenuOpen(menuOpen)
     val title = session.title() ?: stringResource(R.string.session_untitled)
     val unreadDescription = stringResource(R.string.session_unread)
     val elsewhereDescription = stringResource(R.string.session_elsewhere_description)

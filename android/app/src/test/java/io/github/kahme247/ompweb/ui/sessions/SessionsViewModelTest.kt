@@ -955,6 +955,82 @@ class SessionsViewModelTest {
     }
 
     @Test
+    fun `a project pin is stored first for this origin and unpinning removes it`() {
+        val preferences = FakePreferences(
+            SettingsSnapshot(
+                loaded = true,
+                pinnedProjectsByOrigin = mapOf(
+                    address.origin to listOf("/work/existing"),
+                    "http://other.invalid:1" to listOf("/work/foreign"),
+                ),
+            ),
+        )
+        sessionResponses.add(
+            sessions("""{"sessions":[{"id":"s1","cwd":"/work/a"}],"runningSessionIds":[]}"""),
+        )
+        recreate(preferences)
+        viewModel.setActive(true)
+        waitFor("this origin's project pins seeded") {
+            viewModel.state.value.pinnedProjectPaths == listOf("/work/existing")
+        }
+
+        viewModel.toggleProjectPin("/work/new")
+        assertEquals(
+            listOf("/work/new", "/work/existing"),
+            viewModel.state.value.pinnedProjectPaths,
+        )
+        waitFor("pin persisted") { preferences.projectPinWrites.isNotEmpty() }
+        val write = preferences.projectPinWrites.last()
+        assertEquals(address.origin, write.first)
+        assertEquals(listOf("/work/new", "/work/existing"), write.second)
+        assertEquals(
+            mapOf(
+                address.origin to listOf("/work/new", "/work/existing"),
+                "http://other.invalid:1" to listOf("/work/foreign"),
+            ),
+            preferences.current.pinnedProjectsByOrigin,
+        )
+
+        viewModel.toggleProjectPin("/work/existing")
+        viewModel.toggleProjectPin("/work/new")
+        assertEquals(emptyList<String>(), viewModel.state.value.pinnedProjectPaths)
+        waitFor("an empty list clears this origin's entry") {
+            preferences.current.pinnedProjectsByOrigin[address.origin] == null
+        }
+        assertTrue(
+            "another installation's pins survive",
+            preferences.current.pinnedProjectsByOrigin.containsKey("http://other.invalid:1"),
+        )
+    }
+
+    @Test
+    fun `hiding a project forgets its pin`() {
+        val preferences = FakePreferences(
+            SettingsSnapshot(
+                loaded = true,
+                pinnedProjectsByOrigin = mapOf(address.origin to listOf("/work/a")),
+            ),
+        )
+        sessionResponses.add(
+            sessions("""{"sessions":[{"id":"s1","cwd":"/work/a"}],"runningSessionIds":[]}"""),
+        )
+        projectResponses.add(json("""{"projects":[{"path":"/work/a"}]}"""))
+        recreate(preferences)
+        viewModel.setActive(true)
+        waitFor("project pin seeded") {
+            viewModel.state.value.pinnedProjectPaths == listOf("/work/a")
+        }
+
+        viewModel.removeProject("/work/a")
+        waitFor("pin forgotten in state") {
+            viewModel.state.value.pinnedProjectPaths.isEmpty()
+        }
+        waitFor("stale pin removed from storage") {
+            preferences.current.pinnedProjectsByOrigin[address.origin] == null
+        }
+    }
+
+    @Test
     fun `message search debounces to the last query and pages with the cursor`() {
         sessionResponses.add(sessions("""{"sessions":[],"runningSessionIds":[]}"""))
         searchResponses.add(
@@ -1411,6 +1487,21 @@ class SessionsViewModelTest {
 
         /** Every pin write, in order; the pin tests assert origin scoping. */
         val pinWrites = java.util.Collections.synchronizedList(mutableListOf<Pair<String, Set<String>>>())
+
+        override suspend fun setPinnedProjects(origin: String, paths: List<String>) {
+            projectPinWrites += origin to paths
+            state.update {
+                it.copy(
+                    pinnedProjectsByOrigin = it.pinnedProjectsByOrigin.toMutableMap().apply {
+                        if (paths.isEmpty()) remove(origin) else put(origin, paths)
+                    },
+                )
+            }
+        }
+
+        /** Every project-pin write, in order; origin scoping is asserted. */
+        val projectPinWrites =
+            java.util.Collections.synchronizedList(mutableListOf<Pair<String, List<String>>>())
 
         override suspend fun setToolPreset(preset: ToolPreset) {
             state.update { it.copy(toolPreset = preset.wireName) }

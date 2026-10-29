@@ -9,7 +9,6 @@ import io.github.kahme247.ompweb.domain.NavigationHistory
 import io.github.kahme247.ompweb.domain.applyRunningTransition
 import io.github.kahme247.ompweb.domain.comparableProjectPath
 import io.github.kahme247.ompweb.domain.pruneUnread
-import io.github.kahme247.ompweb.domain.sortManagedProjects
 import io.github.kahme247.ompweb.domain.transcriptToMarkdown
 import io.github.kahme247.ompweb.domain.workspaceKeyOf
 import io.github.kahme247.ompweb.events.ConnectionState
@@ -185,6 +184,8 @@ data class SessionsUiState(
     val messageSearch: MessageSearchState = MessageSearchState(),
     /** Session ids pinned for the current server origin. */
     val pinnedIds: Set<String> = emptySet(),
+    /** Project paths pinned for the current server origin, most recent first. */
+    val pinnedProjectPaths: List<String> = emptyList(),
     val runningOnly: Boolean = false,
     val error: SessionsLoadError? = null,
     val connection: ConnectionState = ConnectionState.Reconnecting,
@@ -328,6 +329,11 @@ class SessionsViewModel(
                         } else {
                             it.pinnedIds
                         },
+                        pinnedProjectPaths = if (it.pinnedProjectPaths.isEmpty()) {
+                            snapshot.pinnedProjectsByOrigin[originNow()?.origin ?: snapshot.origin?.origin].orEmpty()
+                        } else {
+                            it.pinnedProjectPaths
+                        },
                     )
                 }
                 maybeSeedProjectExpansion()
@@ -442,6 +448,7 @@ class SessionsViewModel(
                     // Pins belong to the origin that issued the ids; carrying
                     // them across a server switch would pin unrelated sessions.
                     pinnedIds = preferences.snapshot.value.pinnedSessionsByOrigin[originKey].orEmpty(),
+                    pinnedProjectPaths = preferences.snapshot.value.pinnedProjectsByOrigin[originKey].orEmpty(),
                     searchOpen = false,
                     searchQuery = "",
                     searchMode = SessionSearchMode.Sessions,
@@ -466,7 +473,10 @@ class SessionsViewModel(
             // hold pins for this origin. A later emission cannot corrupt this
             // value because it is the persisted, origin-keyed state.
             _state.update {
-                it.copy(pinnedIds = preferences.snapshot.value.pinnedSessionsByOrigin[originKey].orEmpty())
+                it.copy(
+                    pinnedIds = preferences.snapshot.value.pinnedSessionsByOrigin[originKey].orEmpty(),
+                    pinnedProjectPaths = preferences.snapshot.value.pinnedProjectsByOrigin[originKey].orEmpty(),
+                )
             }
         }
         // Cache-first: the last known workspace is painted before the first
@@ -572,11 +582,10 @@ class SessionsViewModel(
             onSuccess = { list ->
                 liveProjectsOrigin = originKey
                 persistProjects(originKey, list)
-                val sorted = sortManagedProjects(list.projects)
                 _state.update {
-                    it.copy(projects = sorted, projectsLoaded = true, projectsError = null)
+                    it.copy(projects = list.projects, projectsLoaded = true, projectsError = null)
                 }
-                pruneExpansion(sorted)
+                pruneExpansion(list.projects)
                 maybeSeedProjectExpansion()
             },
             onFailure = { error ->
@@ -642,9 +651,12 @@ class SessionsViewModel(
                 runCatching { json.decodeFromString(ProjectList.serializer(), stored) }.getOrNull()
             }
             if (projects != null) {
-                val sorted = sortManagedProjects(projects.projects)
                 _state.update { current ->
-                    if (current.projectsLoaded) current else current.copy(projects = sorted, projectsLoaded = true)
+                    if (current.projectsLoaded) {
+                        current
+                    } else {
+                        current.copy(projects = projects.projects, projectsLoaded = true)
+                    }
                 }
                 maybeSeedProjectExpansion()
             }
@@ -1360,33 +1372,22 @@ class SessionsViewModel(
                     activeCwd = if (current.activeCwd == projectPath) null else current.activeCwd,
                 )
             }
+            forgetProjectPin(projectPath)
             reloadProjects()
             showNotice("Project hidden")
         }
     }
 
-    fun moveProjectBy(projectPath: String, delta: Int) {
-        moveProjectTo(projectPath, Math.max(0, projectIndex(projectPath) + delta))
+    /** A hidden project must not keep a pin that would resurface it on top. */
+    private fun forgetProjectPin(projectPath: String) {
+        val origin = originNow()?.origin ?: return
+        val key = comparableProjectPath(projectPath)
+        val current = _state.value.pinnedProjectPaths
+        val next = current.filterNot { comparableProjectPath(it) == key }
+        if (next.size == current.size) return
+        _state.update { it.copy(pinnedProjectPaths = next) }
+        preferenceWrites.trySend { preferences.setPinnedProjects(origin, next) }
     }
-
-    /** Long-press drag and drop: both indices refer to the sorted list. */
-    fun moveProjectTo(projectPath: String, targetIndex: Int) {
-        val current = _state.value.projects
-        val from = projectIndex(projectPath)
-        if (from < 0) return
-        val boundedTarget = targetIndex.coerceIn(0, current.size - 1)
-        if (from == boundedTarget) return
-        val next = current.toMutableList()
-        val moved = next.removeAt(from)
-        next.add(boundedTarget, moved)
-        runAction {
-            api.reorderProjects(next.map { it.path })
-            reloadProjects()
-        }
-    }
-
-    private fun projectIndex(path: String): Int =
-        _state.value.projects.indexOfFirst { comparableProjectPath(it.path) == comparableProjectPath(path) }
 
     // --- Filtering ----------------------------------------------------------
 
@@ -1537,6 +1538,9 @@ class SessionsViewModel(
                     results = if (append) it.messageSearch.results else emptyList(),
                     partial = if (append) it.messageSearch.partial else false,
                     cursor = if (append) it.messageSearch.cursor else null,
+                    // A new query starts a fresh scan: the previous query's
+                    // skipped-file count must not linger while this one loads.
+                    skippedFiles = if (append) it.messageSearch.skippedFiles else 0,
                     autoPages = 0,
                 ),
             )
@@ -1609,6 +1613,25 @@ class SessionsViewModel(
         val next = if (sessionId in current) current - sessionId else current + sessionId
         _state.update { it.copy(pinnedIds = next) }
         preferenceWrites.trySend { preferences.setPinnedSessions(origin, next) }
+    }
+
+    /**
+     * Pins/unpins a project for the current origin. A fresh pin goes to the
+     * front, so the most recently pinned project leads the list. Persisted
+     * through the same ordered queue as the session pins.
+     */
+    fun toggleProjectPin(projectPath: String) {
+        val origin = originNow()?.origin ?: return
+        val key = comparableProjectPath(projectPath)
+        val current = _state.value.pinnedProjectPaths
+        val existing = current.firstOrNull { comparableProjectPath(it) == key }
+        val next = if (existing != null) {
+            current.filterNot { it == existing }
+        } else {
+            listOf(projectPath) + current
+        }
+        _state.update { it.copy(pinnedProjectPaths = next) }
+        preferenceWrites.trySend { preferences.setPinnedProjects(origin, next) }
     }
 
     // --- Archive browser ----------------------------------------------------

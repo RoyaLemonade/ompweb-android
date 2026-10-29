@@ -64,6 +64,12 @@ data class SettingsSnapshot(
      * A pin must never leak to another installation, whose ids mean nothing.
      */
     val pinnedSessionsByOrigin: Map<String, Set<String>> = emptyMap(),
+    /**
+     * Projects the user pinned, keyed by server origin like
+     * [pinnedSessionsByOrigin], in pin order (most recently pinned first).
+     * A project path is meaningless on another installation.
+     */
+    val pinnedProjectsByOrigin: Map<String, List<String>> = emptyMap(),
     /** `dictation_engine` wire value (`auto`/`on_device`/`server`). */
     val dictationEngine: String = "auto",
     /** `dictation_language` BCP-47 tag; null uses the device locale. */
@@ -225,6 +231,7 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
                     expandedProjects = parseStringSet(preferences[EXPANDED_PROJECTS]),
                     unreadSessionIds = parseStringSet(preferences[UNREAD_SESSIONS]) ?: emptySet(),
                     pinnedSessionsByOrigin = parsePinnedSessions(preferences[PINNED_SESSIONS]),
+                    pinnedProjectsByOrigin = parsePinnedProjects(preferences[PINNED_PROJECTS]),
                     dictationEngine = preferences[DICTATION_ENGINE]?.takeIf { it.isNotBlank() } ?: "auto",
                     dictationLanguage = preferences[DICTATION_LANGUAGE]?.takeIf { it.isNotBlank() },
                     toolPreset = preferences[TOOL_PRESET]?.takeIf { it.isNotBlank() } ?: ToolPreset.FULL.wireName,
@@ -387,6 +394,37 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
                 preferences[PINNED_SESSIONS] = encodePinnedSessions(next)
             }
         }
+    }
+
+    /**
+     * Project pins are scoped like session pins: a path means nothing on
+     * another installation. The list is the display order (most recently
+     * pinned first); the whole map is rewritten in one edit.
+     */
+    override suspend fun setPinnedProjects(origin: String, paths: List<String>) {
+        val key = origin.trim()
+        if (key.isEmpty()) return
+        val cleaned = paths.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val next = _snapshot.value.pinnedProjectsByOrigin.toMutableMap().apply {
+            if (cleaned.isEmpty()) remove(key) else put(key, cleaned)
+        }
+        synchronized(this) { _snapshot.value = _snapshot.value.copy(pinnedProjectsByOrigin = next) }
+        dataStore.edit { preferences ->
+            if (next.isEmpty()) {
+                preferences.remove(PINNED_PROJECTS)
+            } else {
+                preferences[PINNED_PROJECTS] = encodePinnedProjects(next)
+            }
+        }
+    }
+
+    /**
+     * Sign-out, a server switch and a 401 forget every origin's project pins
+     * (paths of the installation being left are meaningless on the next one).
+     */
+    suspend fun clearPinnedProjects() {
+        synchronized(this) { _snapshot.value = _snapshot.value.copy(pinnedProjectsByOrigin = emptyMap()) }
+        dataStore.edit { preferences -> preferences.remove(PINNED_PROJECTS) }
     }
 
     override suspend fun setToolPreset(preset: ToolPreset) {
@@ -668,6 +706,7 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
         val EXPANDED_PROJECTS = stringPreferencesKey("expanded_projects")
         val UNREAD_SESSIONS = stringPreferencesKey("unread_sessions")
         val PINNED_SESSIONS = stringPreferencesKey("pinned_sessions_by_origin")
+        val PINNED_PROJECTS = stringPreferencesKey("pinned_projects_by_origin")
         val DICTATION_ENGINE = stringPreferencesKey("dictation_engine")
         val DICTATION_LANGUAGE = stringPreferencesKey("dictation_language")
         val TOOL_PRESET = stringPreferencesKey("tool_preset")
@@ -804,6 +843,37 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
             JsonObject(
                 values.toSortedMap().mapValues { (_, ids) ->
                     buildJsonArray { ids.sorted().forEach { add(JsonPrimitive(it)) } }
+                },
+            ).toString()
+
+        /**
+         * `{origin: [projectPath, …]}`; the array order is the pin order and
+         * is preserved. Blank paths and origins are dropped, malformed
+         * entries fall back to "no pins" like the session pins.
+         */
+        fun parsePinnedProjects(raw: String?): Map<String, List<String>> {
+            if (raw.isNullOrBlank()) return emptyMap()
+            return try {
+                val root = json.parseToJsonElement(raw) as? JsonObject ?: return emptyMap()
+                root.mapNotNull { (origin, value) ->
+                    if (origin.isBlank()) return@mapNotNull null
+                    val paths = (value as? JsonArray)
+                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotEmpty() }
+                        ?.distinct()
+                        ?: return@mapNotNull null
+                    if (paths.isEmpty()) null else origin to paths
+                }.toMap()
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        }
+
+        fun encodePinnedProjects(values: Map<String, List<String>>): String =
+            JsonObject(
+                values.toSortedMap().mapValues { (_, paths) ->
+                    buildJsonArray { paths.forEach { add(JsonPrimitive(it)) } }
                 },
             ).toString()
     }

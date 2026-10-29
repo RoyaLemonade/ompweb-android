@@ -8,7 +8,7 @@ sessions (pin the ones you use most to the top of the list), the live chat, the
 composer with slash commands and dictation, files, Git and worktrees,
 notifications with inline replies, and all settings.
 
-The current release is **ompweb 1.0.17** (`versionCode` 10017). `applicationId`
+The current release is **ompweb 1.0.18** (`versionCode` 10018). `applicationId`
 `io.github.kahme247.ompweb`. It is distributed as an APK on GitHub Releases;
 there is no Play Store listing.
 
@@ -39,8 +39,8 @@ network (loopback, RFC 1918, `100.64.0.0/10` for Tailscale, link-local,
 1. Open the release page:
    <https://github.com/RoyaLemonade/ompweb-android/releases> and pick the newest
    `android-v*` release.
-2. Download `ompweb-1.0.17.apk` and, to verify it, its companion
-   `ompweb-1.0.17.apk.sha256`.
+2. Download `ompweb-1.0.18.apk` and, to verify it, its companion
+   `ompweb-1.0.18.apk.sha256`.
 3. Open the file on the phone. Android asks once whether the app that opens it
    (Files, Chrome, …) may install unknown apps: allow it.
 4. Confirm the install. Signed updates install over the previous version; the
@@ -157,8 +157,8 @@ Every release publishes the SHA-256 of the APK as
 them before installing:
 
 ```sh
-# V is the release you downloaded, for example V=1.0.17
-V=1.0.17
+# V is the release you downloaded, for example V=1.0.18
+V=1.0.18
 
 # With the published checksum file (Linux / macOS; both files in one folder)
 sha256sum -c ompweb-$V.apk.sha256
@@ -179,7 +179,7 @@ Get-FileHash .\ompweb-$V.apk -Algorithm SHA256
 With Android SDK build-tools installed:
 
 ```sh
-apksigner verify --print-certs ompweb-1.0.17.apk
+apksigner verify --print-certs ompweb-1.0.18.apk
 ```
 
 An APK whose certificate differs was not built by this project: do not install
@@ -299,5 +299,6 @@ tagging:
 ## More documentation
 
 - [`protocol.md`](protocol.md) — the RPC/frame contract the chat implements.
-- [`RELEASE_NOTES_1.0.17.md`](RELEASE_NOTES_1.0.17.md) — the current release
+- [`RELEASE_NOTES_1.0.18.md`](RELEASE_NOTES_1.0.18.md) — the current release
   notes.
+- [`RELEASE_NOTES_1.0.17.md`](RELEASE_NOTES_1.0.17.md) — the previous release.

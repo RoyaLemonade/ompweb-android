@@ -10,7 +10,7 @@ The app is **not** a wrapper around the web page: the whole workspace is native
 — sessions, streaming chat, the composer, files, Git, worktrees, notifications
 and settings.
 
-- Current release: **1.0.17** (`versionCode` 10017)
+- Current release: **1.0.18** (`versionCode` 10018)
 - `applicationId`: `io.github.kahme247.ompweb` (a stable id, so signed updates
   install over the previous version and keep the app data)
 - Distribution: signed APKs on this repository's

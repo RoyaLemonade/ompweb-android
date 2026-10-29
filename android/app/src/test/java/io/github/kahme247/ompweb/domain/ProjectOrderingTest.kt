@@ -3,6 +3,7 @@ package io.github.kahme247.ompweb.domain
 import io.github.kahme247.ompweb.net.ManagedProject
 import io.github.kahme247.ompweb.net.SessionSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,54 +22,129 @@ class ProjectOrderingTest {
         ).overrides()
 
     @Test
-    fun `sorts registered projects by most-recently-added, tie-broken by path`() {
+    fun `pinned projects lead in pin order, then running ones, then activity`() {
         val projects = listOf(
-            ManagedProject(path = "/proj/oldest", addedAt = "2026-01-01T00:00:00.000Z"),
-            ManagedProject(path = "/proj/newest", addedAt = "2026-03-01T00:00:00.000Z"),
-            ManagedProject(path = "/proj/middle", addedAt = "2026-02-01T00:00:00.000Z"),
+            ManagedProject(path = "/proj/a"),
+            ManagedProject(path = "/proj/b"),
+            ManagedProject(path = "/proj/c"),
+        )
+        val ordered = orderProjectsByActivity(
+            projects = projects,
+            pinnedPaths = listOf("/proj/c", "/proj/a"),
+            runningProjects = listOf("/proj/b"),
+            lastActivity = mapOf(
+                comparableProjectPath("/proj/a") to 1L,
+                comparableProjectPath("/proj/b") to 9L,
+                comparableProjectPath("/proj/c") to 5L,
+            ),
+        )
+        assertEquals(listOf("/proj/c", "/proj/a", "/proj/b"), ordered.map { it.path })
+    }
+
+    @Test
+    fun `a newly pinned project leads the pinned group`() {
+        val projects = listOf(
+            ManagedProject(path = "/proj/a"),
+            ManagedProject(path = "/proj/b"),
+            ManagedProject(path = "/proj/c"),
+        )
+        val afterPinning = orderProjectsByActivity(
+            projects = projects,
+            // toggleProjectPin puts the newest pin first.
+            pinnedPaths = listOf("/proj/b", "/proj/a"),
+            runningProjects = listOf("/proj/c"),
+            lastActivity = mapOf(comparableProjectPath("/proj/c") to 9_000L),
+        )
+        assertEquals(listOf("/proj/b", "/proj/a", "/proj/c"), afterPinning.map { it.path })
+    }
+
+    @Test
+    fun `running projects come before idle ones, newest session activity leads the rest`() {
+        val projects = listOf(
+            ManagedProject(path = "/proj/old-idle"),
+            ManagedProject(path = "/proj/running-old"),
+            ManagedProject(path = "/proj/new-idle"),
+            ManagedProject(path = "/proj/no-sessions"),
+        )
+        val ordered = orderProjectsByActivity(
+            projects = projects,
+            pinnedPaths = emptyList(),
+            runningProjects = listOf("/proj/running-old"),
+            lastActivity = mapOf(
+                comparableProjectPath("/proj/old-idle") to 100L,
+                comparableProjectPath("/proj/running-old") to 1L,
+                comparableProjectPath("/proj/new-idle") to 200L,
+            ),
         )
         assertEquals(
-            listOf("/proj/newest", "/proj/middle", "/proj/oldest"),
-            sortManagedProjects(projects).map { it.path },
+            listOf("/proj/running-old", "/proj/new-idle", "/proj/old-idle", "/proj/no-sessions"),
+            ordered.map { it.path },
         )
     }
 
     @Test
-    fun `manual workspace order overrides add time and remains stable`() {
+    fun `equal activity keeps the incoming order`() {
         val projects = listOf(
-            ManagedProject(path = "/proj/new", addedAt = "2026-03-01T00:00:00.000Z", sortOrder = 1),
-            ManagedProject(path = "/proj/old", addedAt = "2026-01-01T00:00:00.000Z", sortOrder = 0),
+            ManagedProject(path = "/proj/first"),
+            ManagedProject(path = "/proj/second"),
+            ManagedProject(path = "/proj/third"),
         )
-        assertEquals(listOf("/proj/old", "/proj/new"), sortManagedProjects(projects).map { it.path })
+        val activity = 42L
+        val ordered = orderProjectsByActivity(
+            projects = projects,
+            pinnedPaths = emptyList(),
+            runningProjects = listOf("/proj/second", "/proj/third"),
+            lastActivity = projects.associate { comparableProjectPath(it.path) to activity },
+        )
+        assertEquals(listOf("/proj/second", "/proj/third", "/proj/first"), ordered.map { it.path })
     }
 
     @Test
-    fun `project order is stable regardless of session activity`() {
+    fun `pins match through casing-only path differences`() {
         val projects = listOf(
-            ManagedProject(path = "/proj/a", addedAt = "2026-01-01T00:00:00.000Z"),
-            ManagedProject(path = "/proj/b", addedAt = "2026-02-01T00:00:00.000Z"),
+            ManagedProject(path = "D:\\OtherProjects\\Waku"),
+            ManagedProject(path = "D:\\OtherProjects\\Other"),
         )
+        val ordered = orderProjectsByActivity(
+            projects = projects,
+            pinnedPaths = listOf("d:\\otherprojects\\waku"),
+            runningProjects = emptyList(),
+            lastActivity = emptyMap(),
+        )
+        assertEquals(listOf("D:\\OtherProjects\\Waku", "D:\\OtherProjects\\Other"), ordered.map { it.path })
+    }
+
+    @Test
+    fun `projectLastActivity keeps the newest timestamp and ignores malformed values`() {
         val sessions = listOf(
-            session("s-a") { copy(modified = "2026-06-01T00:00:00.000Z", projectRoot = "/proj/a") },
-            session("s-b") { copy(modified = "2026-03-01T00:00:00.000Z", projectRoot = "/proj/b") },
+            session("a-old") { copy(projectRoot = "/proj/a", modified = "2026-01-01T00:00:00.000Z") },
+            session("a-new") { copy(projectRoot = "/proj/a", modified = "2026-03-01T00:00:00.000Z") },
+            session("a-broken") { copy(projectRoot = "/proj/a", modified = "not-a-date") },
+            session("b") { copy(projectRoot = "/proj/b", modified = "2026-02-01T00:00:00.000Z") },
+            session("c-broken") { copy(projectRoot = "/proj/c", modified = "") },
         )
-        assertEquals(listOf("/proj/b", "/proj/a"), sortManagedProjects(projects).map { it.path })
-        assertEquals(listOf("/proj/b", "/proj/a"), sortManagedProjects(projects).map { it.path })
-        assertEquals(2, sessions.size)
+        val activity = projectLastActivity(sessions)
+        assertEquals(
+            java.time.Instant.parse("2026-03-01T00:00:00.000Z").toEpochMilli(),
+            activity.getValue(comparableProjectPath("/proj/a")),
+        )
+        assertEquals(
+            java.time.Instant.parse("2026-02-01T00:00:00.000Z").toEpochMilli(),
+            activity.getValue(comparableProjectPath("/proj/b")),
+        )
+        assertFalse(activity.containsKey(comparableProjectPath("/proj/c")))
     }
 
     @Test
-    fun `session-discovered projects without addedAt sort below registered, by path`() {
+    fun `applyProjectOrder keeps the frozen order and appends unknown projects`() {
         val projects = listOf(
-            ManagedProject(path = "/proj/registered"),
-            ManagedProject(path = "/proj/active", addedAt = "2026-01-01T00:00:00.000Z"),
-            ManagedProject(path = "/proj/inactive", addedAt = "2026-02-01T00:00:00.000Z"),
-            ManagedProject(path = "/proj/zzz"),
+            ManagedProject(path = "/proj/new"),
+            ManagedProject(path = "/proj/a"),
+            ManagedProject(path = "/proj/b"),
         )
-        assertEquals(
-            listOf("/proj/inactive", "/proj/active", "/proj/registered", "/proj/zzz"),
-            sortManagedProjects(projects).map { it.path },
-        )
+        val ordered = applyProjectOrder(projects, listOf("/proj/b", "/proj/a"))
+        assertEquals(listOf("/proj/b", "/proj/a", "/proj/new"), ordered.map { it.path })
+        assertEquals(projects, applyProjectOrder(projects, emptyList()))
     }
 
     @Test

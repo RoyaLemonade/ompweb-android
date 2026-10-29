@@ -156,7 +156,6 @@ data class ManagedProject(
     val path: String,
     val addedAt: String? = null,
     val alias: String? = null,
-    val sortOrder: Int? = null,
     val launchConfig: ProjectLaunchConfig? = null,
 )
 
