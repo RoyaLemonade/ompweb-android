@@ -10,12 +10,12 @@ The app is **not** a wrapper around the web page: the whole workspace is native
 — sessions, streaming chat, the composer, files, Git, worktrees, notifications
 and settings.
 
-- Current release: **1.0.18** (`versionCode` 10018)
 - `applicationId`: `io.github.kahme247.ompweb` (a stable id, so signed updates
   install over the previous version and keep the app data)
 - Distribution: signed APKs on this repository's
   [Releases](https://github.com/RoyaLemonade/ompweb-android/releases); there is
-  no Play Store listing
+  no Play Store listing. The newest release there names the current version,
+  its `versionCode`, the APK and its SHA-256.
 
 ## Features
 
@@ -25,8 +25,8 @@ and settings.
   subagents, todos, markdown with LaTeX and Mermaid, images and PDFs in the
   file viewer, jump-to-message and a raw transcript view.
 - **Composer** with slash commands, attachments (files, images, shared text),
-  dictation through the server's speech-to-text, message queue and steering,
-  and word prediction.
+  dictation through the server's speech-to-text or this phone's on-device
+  recognizer, message queue and steering, and word prediction.
 - **Files, Git and worktrees**: explorer, viewer/editor, uploads with conflict
   handling, staged/unstaged diffs, worktree create/switch/remove.
 - **Notifications with inline replies**: agents finishing, waiting for an
