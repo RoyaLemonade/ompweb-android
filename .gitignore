@@ -1,0 +1,26 @@
+# Gradle and Android build output
+android/.gradle/
+android/.kotlin/
+android/build/
+android/**/build/
+android/.cxx/
+android/captures/
+
+# Local machine configuration
+android/local.properties
+android/*.iml
+
+# IDE
+android/.idea/
+
+# Signing material must never be committed.
+*.jks
+*.keystore
+*.p12
+*.pem
+*.bks
+signing.properties
+
+# Desktop metadata
+.DS_Store
+Thumbs.db
