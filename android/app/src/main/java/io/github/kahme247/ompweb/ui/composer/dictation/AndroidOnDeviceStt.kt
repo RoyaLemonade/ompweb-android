@@ -23,8 +23,10 @@ import androidx.core.content.ContextCompat
  * API 31+); without an installed on-device model the class reports
  * [OnDeviceSttError.NoRecognizer] instead of falling back to the default
  * recognizer, which may send the audio over the network while the UI promises
- * on-device processing. The intent asks for partial results, a silence window
- * that ends the utterance after the speaker pauses and offline preference.
+ * on-device processing. The intent asks for partial results, a session that
+ * outlives the pauses between utterances (each utterance is finalized as its
+ * own segment) and offline preference: a pause must not end the take or throw
+ * away what was said before it.
  *
  * The language model is checked before listening (API 33+,
  * `checkRecognitionSupport`): every take is a question to a recognizer that
@@ -147,13 +149,28 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
     private fun onMainThread(): Boolean = Looper.myLooper() == Looper.getMainLooper()
 
     /**
-     * The intent for one take. No `EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS`:
-     * the on-device recognizer ends the input once that much audio has arrived,
-     * so a 500 ms minimum closed the microphone half a second after the tap and
+     * The intent for one take.
+     *
+     * One take spans the pauses between utterances. The recognizer finalizes
+     * an utterance when the speaker stops talking and keeps listening: with
+     * segmented session mode (API 33+) each of those utterances arrives as a
+     * segment, and on services without it Google's dictation mode keeps the
+     * session open while it flags the finalized utterances in the partial
+     * results (Chromium's `SpeechRecognitionImpl` sends exactly these extras
+     * for a continuous Web Speech session). Ending the take at the first
+     * pause instead lost everything the speaker said afterwards, and a
+     * complete-silence window asked the recognizer to cut the session there.
+     *
+     * No `EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS` of half a second: the
+     * on-device recognizer ends the input once that much audio has arrived, so
+     * such a minimum closed the microphone half a second after the tap and
      * answered "No speech detected" before the user could start (logcat on a
      * Pixel: microphone opened 16:07:00.526, close requested 16:07:01.026,
-     * `NO_SPEECH_DETECTED`). The complete-silence window stays: it ends the
-     * take after the speaker pauses, which is what the live strip promises.
+     * `NO_SPEECH_DETECTED`). A long one is what keeps the session open.
+     *
+     * The extras are spelled as integers: recognizer implementations read them
+     * with getIntExtra (a Long silently falls back to their default and would
+     * never keep the session open).
      */
     private fun recognitionIntent(language: String): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -162,10 +179,18 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
-            // The extras are spelled as integers: recognizer implementations
-            // read them with getIntExtra (a Long silently falls back to their
-            // default and would never end the take on silence).
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MS)
+            // Legacy continuous dictation; current Google recognizers ignore it.
+            putExtra(EXTRA_DICTATION_MODE, true)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, SESSION_MS)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // The session length is also the segmentation rule: an
+                // utterance is ready when the speaker pauses, the session
+                // itself runs on.
+                putExtra(
+                    RecognizerIntent.EXTRA_SEGMENTED_SESSION,
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                )
+            }
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
 
@@ -281,20 +306,49 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
         target?.onError(error)
     }
 
+    /** Reports the take's final transcript once and destroys the recognizer. */
+    private fun endTake(text: String) {
+        val target = listener
+        release()
+        target?.onFinal(text)
+    }
+
     /** Forwards the callbacks, then destroys the recognizer exactly once. */
     private inner class RecognitionAdapter : RecognitionListener {
 
+        /**
+         * A hypothesis of the utterance in progress. Google's recognizer flags
+         * the partial that finalizes an utterance with `final_result` when the
+         * service has no segmented session (Chromium's `SpeechRecognitionImpl`
+         * relies on the same flag), so that one is a segment.
+         */
         override fun onPartialResults(partialResults: Bundle?) {
             val text = firstResult(partialResults) ?: return
             if (text.isBlank()) return
-            listener?.onPartial(text)
+            if (partialResults?.getBoolean(EXTRA_FINAL_SEGMENT, false) == true) {
+                listener?.onSegment(text)
+            } else {
+                listener?.onPartial(text)
+            }
+        }
+
+        /** API 33+: one utterance between two pauses, already final. */
+        override fun onSegmentResults(segmentResults: Bundle) {
+            val text = firstResult(segmentResults) ?: return
+            if (text.isBlank()) return
+            listener?.onSegment(text)
+        }
+
+        /** API 33+: the segmented session is over; the view model keeps what it heard. */
+        override fun onEndOfSegmentedSession() {
+            if (listener != null) endTake("")
         }
 
         override fun onResults(results: Bundle?) {
-            val text = firstResult(results).orEmpty()
-            val target = listener
-            release()
-            target?.onFinal(text)
+            // Android promises the full speech since onReadyForSpeech; a
+            // continuous session may end with an empty bundle instead, and the
+            // view model then keeps what the segments produced.
+            endTake(firstResult(results).orEmpty())
         }
 
         override fun onError(error: Int) {
@@ -330,8 +384,18 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
         }.getOrNull()
 
     private companion object {
-        /** Ends the take this long after the speaker stops talking. */
-        const val SILENCE_MS = 1_500
+        /**
+         * The length of one take: the recognizer keeps listening across the
+         * pauses between utterances and finalizes each of them. Five minutes is
+         * the longest session the on-device recognizer accepts for this extra.
+         */
+        const val SESSION_MS = 5 * 60 * 1_000
+
+        /** Legacy continuous-dictation switch of the Google recognizer. */
+        const val EXTRA_DICTATION_MODE = "android.speech.extra.DICTATION_MODE"
+
+        /** Google's flag on the partial result that finalizes an utterance. */
+        const val EXTRA_FINAL_SEGMENT = "final_result"
 
         /**
          * A NO_MATCH/SPEECH_TIMEOUT inside this window never waited for the

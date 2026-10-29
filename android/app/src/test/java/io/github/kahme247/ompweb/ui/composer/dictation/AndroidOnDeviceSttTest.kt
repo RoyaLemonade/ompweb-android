@@ -44,11 +44,16 @@ class AndroidOnDeviceSttTest {
 
     private class RecordingListener : OnDeviceStt.Listener {
         val partials = mutableListOf<String>()
+        val segments = mutableListOf<String>()
         var final: String? = null
         var error: OnDeviceSttError? = null
 
         override fun onPartial(text: String) {
             partials += text
+        }
+
+        override fun onSegment(text: String) {
+            segments += text
         }
 
         override fun onFinal(text: String) {
@@ -112,22 +117,31 @@ class AndroidOnDeviceSttTest {
     }
 
     @Test
-    fun `the take is never ended on a minimum input length before the user speaks`() {
+    fun `the take stays open across pauses so the next utterance is kept`() {
         val intent = startListening()
 
         assertEquals("de-DE", intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
+        assertEquals(
+            "the session outlives the speaker's pauses instead of ending on the first one",
+            CONTINUOUS_LENGTH_MS,
+            intent.getIntExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 0),
+        )
         assertFalse(
-            "a minimum input length closes the microphone before the first word",
-            intent.hasExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS),
+            "a complete-silence window would cut the take at the first pause",
+            intent.hasExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS),
         )
         assertFalse(
             "a possibly-complete silence window ends the take before the first word",
             intent.hasExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS),
         )
         assertEquals(
-            "the take still ends itself after the speaker pauses",
-            1_500,
-            intent.getIntExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 0),
+            "each utterance between two pauses is finalized as its own segment",
+            RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+            intent.getStringExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION),
+        )
+        assertTrue(
+            "recognizers without segmented sessions keep dictating across pauses",
+            intent.getBooleanExtra(DICTATION_MODE, false),
         )
         assertTrue(intent.getBooleanExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false))
         assertTrue(intent.getBooleanExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false))
@@ -256,5 +270,56 @@ class AndroidOnDeviceSttTest {
             putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("hallo"))
         })
         assertEquals(listOf("hallo"), listener.partials)
+    }
+
+    @Test
+    fun `a finalized utterance of a segmented session is reported as a segment`() {
+        startListening()
+        shadow.triggerOnSegmentResults(Bundle().apply {
+            putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("hallo du"))
+        })
+        assertEquals(listOf("hallo du"), listener.segments)
+        assertEquals("a finalized utterance is no hypothesis", emptyList<String>(), listener.partials)
+    }
+
+    @Test
+    fun `a partial flagged as final is a finalized utterance`() {
+        startListening()
+        shadow.triggerOnPartialResults(Bundle().apply {
+            putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("hallo du"))
+            putBoolean(EXTRA_FINAL_SEGMENT, true)
+        })
+        assertEquals(
+            "recognizers without segmented sessions mark finalized utterances this way",
+            listOf("hallo du"),
+            listener.segments,
+        )
+        assertEquals(emptyList<String>(), listener.partials)
+    }
+
+    @Test
+    fun `the end of a segmented session ends the take`() {
+        startListening()
+        shadow.triggerOnEndOfSegmentedSession()
+        assertEquals(
+            "the view model keeps what the segments produced when the final is blank",
+            "",
+            listener.final,
+        )
+    }
+
+    private companion object {
+        /**
+         * The longest session the Google recognizer accepts for
+         * `EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS`; it keeps the session open
+         * across the pauses between utterances.
+         */
+        const val CONTINUOUS_LENGTH_MS = 5 * 60 * 1000
+
+        /** Google's own extra for continuous dictation (see `SpeechRecognitionImpl` in Chromium). */
+        const val DICTATION_MODE = "android.speech.extra.DICTATION_MODE"
+
+        /** Google's flag on a partial result that finalizes an utterance. */
+        const val EXTRA_FINAL_SEGMENT = "final_result"
     }
 }

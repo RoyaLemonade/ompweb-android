@@ -81,7 +81,16 @@ interface OnDeviceStt {
     fun release()
 
     interface Listener {
+        /** The recognizer's hypothesis for the utterance it is in right now. */
         fun onPartial(text: String)
+
+        /**
+         * One utterance the recognizer finalized because the speaker paused.
+         * One take spans several of them: on a Pixel the next hypothesis
+         * starts with the new words only, so a segment has to be added to the
+         * take instead of being replaced by what follows.
+         */
+        fun onSegment(text: String)
 
         fun onFinal(text: String)
 

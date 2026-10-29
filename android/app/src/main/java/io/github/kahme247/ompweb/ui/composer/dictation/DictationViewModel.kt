@@ -134,8 +134,10 @@ data class DictationStrings(
  *
  * With "Dictation engine" On-device (or Auto without a server that can
  * transcribe) the recorder and the job protocol are bypassed: Android's
- * [OnDeviceStt] feeds partial transcripts that [LiveDictationBuffer] splices
- * into the composer at the caret, ending on silence or a tap. Auto asks
+ * [OnDeviceStt] reports the utterances the recognizer finalizes and the
+ * hypothesis of the one in progress, and [LiveDictationBuffer] splices them
+ * into the composer at the caret. The take ends on a tap or when the composer
+ * is backgrounded — a pause between two utterances ends nothing. Auto asks
  * [ServerSttRegistry] before the microphone opens, so a take is never uploaded
  * to a server that cannot transcribe it.
  */
@@ -220,7 +222,6 @@ class DictationViewModel(
 
     private val liveBuffer = LiveDictationBuffer()
     private var liveActive = false
-    private var livePartial = ""
     private var liveStartedAt = 0L
     /** The BCP-47 tag of the running take, for the failure message. */
     private var liveLanguage = ""
@@ -268,7 +269,7 @@ class DictationViewModel(
         } else if (liveActive) {
             // A backgrounded composer cannot show the strip; keep what was
             // spoken so far as draft text.
-            commitLive(spoken = livePartial)
+            commitLive(spoken = liveBuffer.text)
         }
     }
 
@@ -407,7 +408,6 @@ class DictationViewModel(
         }
         machine.reset()
         liveBuffer.reset()
-        livePartial = ""
         liveStartedAt = clock()
         liveActive = true
         publish()
@@ -417,25 +417,33 @@ class DictationViewModel(
         startLiveTicker()
     }
 
-    /** Recognizer callbacks: main thread, in order, exactly one final or error. */
+    /**
+     * Recognizer callbacks: main thread, in order, exactly one final or error.
+     * The buffer owns the take's text — the utterances the recognizer already
+     * finalized plus the hypothesis it is in right now — so a pause never
+     * throws away what was said before it.
+     */
     private val liveListener = object : OnDeviceStt.Listener {
         override fun onPartial(text: String) {
             if (!liveActive) return
-            val next = text.trim()
-            livePartial = next
-            applyLive(liveBuffer.onPartial(liveFieldText(), liveFieldCaret(), next))
+            applyLive(liveBuffer.onPartial(liveFieldText(), liveFieldCaret(), text))
+            publish()
+        }
+
+        override fun onSegment(text: String) {
+            if (!liveActive) return
+            applyLive(liveBuffer.onSegment(liveFieldText(), liveFieldCaret(), text))
             publish()
         }
 
         override fun onFinal(text: String) {
             if (!liveActive) return
-            val spoken = text.trim().ifEmpty { livePartial }
-            commitLive(spoken)
+            commitLive(text.trim())
         }
 
         override fun onError(error: OnDeviceSttError) {
             if (!liveActive) return
-            val spoken = livePartial
+            val spoken = liveBuffer.text
             // The language the take ran with, so a model message names it.
             val languageLabel = dictationLanguageLabel(liveLanguage, deviceLocale)
             val message = when (error) {
@@ -457,9 +465,9 @@ class DictationViewModel(
     }
 
     /**
-     * Ends a live capture: [spoken] replaces the visible live text (or is
-     * inserted once when no partial ever arrived), then the state is Idle or
-     * the [message] failure.
+     * Ends a live capture: [spoken] is the session's transcript (blank when
+     * the recognizer answered nothing and the buffer keeps its utterances),
+     * then the state is Idle or the [message] failure.
      */
     private fun commitLive(spoken: String, message: String? = null) {
         if (!liveActive) return
@@ -467,7 +475,6 @@ class DictationViewModel(
         val insertion = liveBuffer.onFinal(liveFieldText(), liveFieldCaret(), spoken)
         applyLive(insertion)
         liveBuffer.reset()
-        livePartial = ""
         liveJob?.cancel()
         liveJob = null
         liveStopJob?.cancel()
@@ -488,7 +495,6 @@ class DictationViewModel(
         runCatching { onDevice?.cancel() }
         if (restore) applyLive(liveBuffer.onCancel(liveFieldText()))
         liveBuffer.reset()
-        livePartial = ""
         liveJob?.cancel()
         liveJob = null
         liveStopJob?.cancel()
@@ -525,13 +531,13 @@ class DictationViewModel(
     /** Stops the capture and transcribes with the intent chosen at start. */
     fun stop() {
         if (liveActive) {
-            // The recognizer ends the utterance itself on silence; a tap asks
-            // it to wrap up and keeps the partial if no answer ever comes.
+            // A tap asks the recognizer to end the session; the utterances it
+            // already finalized stay visible until its answer arrives.
             if (liveStopJob?.isActive == true) return
             runCatching { onDevice?.stop() }
             liveStopJob = scope.launch {
                 delay(LIVE_RESULT_TIMEOUT_MS)
-                if (liveActive) commitLive(spoken = livePartial)
+                if (liveActive) commitLive(spoken = liveBuffer.text)
             }
             return
         }

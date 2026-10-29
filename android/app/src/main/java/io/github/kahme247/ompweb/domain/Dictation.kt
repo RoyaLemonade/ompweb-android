@@ -105,45 +105,64 @@ fun offeredDictationLanguages(
 /**
  * The live on-device transcript as edits on the composer field.
  *
- * The first partial anchors at the caret, later partials replace the visible
- * live text instead of appending to it, and the final transcript replaces the
- * partial. The field stays editable while listening: when the user changed it
- * under the live text, the buffer keeps what is visible and continues at the
- * new caret. Pure and anchored on text/caret reads, so the composer owns the
- * actual field.
+ * One take is not one utterance. Android's recognizer (the Google on-device
+ * service on a Pixel) keeps the session open and finalizes an utterance every
+ * time the speaker pauses; the next utterance starts from an empty hypothesis.
+ * A partial is only the hypothesis of the utterance the recognizer is in right
+ * now (`RecognitionListener.onPartialResults`: "might be called at any time",
+ * no promise that it grows), so replacing the visible take with the next
+ * partial dropped everything said before the pause — the reported "I talk,
+ * pause, talk again, and the first text is gone".
+ *
+ * [onSegment] therefore commits a finalized utterance to the take, and the
+ * hypothesis after it is rendered behind the committed text. A service that
+ * reports the whole session so far is fine too: a partial or segment that
+ * repeats the committed words is stripped down to its new ones. The final
+ * transcript of the session contains everything the take said (Android:
+ * "results for the full speech since onReadyForSpeech"), so it replaces the
+ * take instead of being appended — a final that merely repeats the last
+ * utterance is not duplicated.
+ *
+ * The first edit anchors at the caret. The field stays editable while
+ * listening: when the user changed it under the live text, the buffer keeps
+ * what is visible, treats it as the new base and continues at the new caret.
+ * Pure and anchored on text/caret reads, so the composer owns the field.
  */
 class LiveDictationBuffer {
 
     private var base: String? = null
     private var anchor = 0
+
+    /** The hypothesis of the utterance the recognizer is in right now. */
     private var live = ""
+
+    /** The utterances this take already finalized, already joined. */
+    private var committed = ""
+
     /** The text this buffer produced last, to notice a user edit. */
     private var applied: String? = null
 
     val active: Boolean get() = base != null
 
-    /** The live text as last accepted (already trimmed). */
-    val text: String get() = live
+    /** Everything the take produced: the finalized utterances plus the hypothesis. */
+    val text: String get() = joined()
 
-    /** A new partial from the recognizer; null when the field is unchanged. */
+    /** A new hypothesis of the current utterance; null when the field is unchanged. */
     fun onPartial(current: String, caret: Int, partial: String): TextInsertion? {
-        val next = partial.trim()
-        if (base == null) {
-            base = current
-            anchor = caret.coerceIn(0, current.length)
-            live = ""
-        } else if (current != applied) {
-            // The user edited the field while listening: the visible text is
-            // theirs, so it becomes the new base and the caret the new anchor.
-            base = current
-            anchor = caret.coerceIn(0, current.length)
-            live = ""
-        }
+        anchor(current, caret)
+        val next = fresh(partial)
         if (next == live) return null
         live = next
-        val insertion = render(base.orEmpty(), anchor, live) ?: return null
-        applied = insertion.text
-        return insertion
+        return show()
+    }
+
+    /** An utterance the recognizer finalized at a pause; null when there is nothing to show. */
+    fun onSegment(current: String, caret: Int, segment: String): TextInsertion? {
+        anchor(current, caret)
+        val next = fresh(segment)
+        if (next.isNotEmpty()) committed = joined(committed, next)
+        live = ""
+        return show()
     }
 
     /** The final transcript; null when it is blank and nothing was shown. */
@@ -153,12 +172,15 @@ class LiveDictationBuffer {
         val insertion = if (start == null) {
             if (text.isEmpty()) null else render(current, caret.coerceIn(0, current.length), text)
         } else {
-            if (current != applied) {
-                base = current
-                anchor = caret.coerceIn(0, current.length)
-                live = ""
+            anchor(current, caret)
+            val shown = when {
+                // Nothing came back: keep every utterance the take finalized.
+                text.isEmpty() -> joined()
+                // The session's transcript already contains them.
+                repeatsCommitted(text) -> text
+                // Only the last utterance: the earlier ones must survive.
+                else -> joined(committed, text)
             }
-            val shown = if (text.isEmpty()) live else text
             if (shown.isEmpty()) null else render(base.orEmpty(), anchor, shown)
         }
         reset()
@@ -177,7 +199,65 @@ class LiveDictationBuffer {
         base = null
         anchor = 0
         live = ""
+        committed = ""
         applied = null
+    }
+
+    /**
+     * Anchors the take at the field, or re-anchors it after the user edited the
+     * field: what is visible is theirs, so it becomes the new base and the
+     * text shown so far is part of it (the take continues at the new caret).
+     */
+    private fun anchor(current: String, caret: Int) {
+        if (base == null) {
+            base = current
+            anchor = caret.coerceIn(0, current.length)
+            return
+        }
+        if (current == applied) return
+        base = current
+        anchor = caret.coerceIn(0, current.length)
+        live = ""
+        committed = ""
+    }
+
+    /** [text] without the words this take already committed. */
+    private fun fresh(text: String): String {
+        val trimmed = text.trim()
+        if (!repeatsCommitted(trimmed)) return trimmed
+        return words(trimmed).drop(words(committed).size).joinToString(" ")
+    }
+
+    /** Whether [text] starts with the words the take already committed. */
+    private fun repeatsCommitted(text: String): Boolean {
+        if (committed.isEmpty()) return true
+        val kept = words(committed)
+        val said = words(text)
+        return said.size >= kept.size && kept.indices.all { sameWord(kept[it], said[it]) }
+    }
+
+    /** Words compare without punctuation and case: a segment may end in a period. */
+    private fun sameWord(kept: String, said: String): Boolean =
+        kept.trim(::isNotWordCharacter).equals(said.trim(::isNotWordCharacter), ignoreCase = true)
+
+    private fun isNotWordCharacter(character: Char): Boolean = !character.isLetterOrDigit()
+
+    private fun words(text: String): List<String> =
+        text.split(' ', '\n', '\t').filter { it.isNotEmpty() }
+
+    private fun joined(): String = joined(committed, live)
+
+    private fun joined(first: String, second: String): String = when {
+        first.isEmpty() -> second
+        second.isEmpty() -> first
+        else -> "$first $second"
+    }
+
+    /** Hands the take's text to the field; null when the field already shows it. */
+    private fun show(): TextInsertion? {
+        val insertion = render(base.orEmpty(), anchor, joined()) ?: return null
+        applied = insertion.text
+        return insertion
     }
 
     private fun render(base: String, anchor: Int, text: String): TextInsertion? {
@@ -268,8 +348,8 @@ sealed interface DictationState {
     /**
      * On-device recognition is listening: the composer field stays visible and
      * receives the transcript at its caret as it is spoken; the strip below it
-     * offers stop/cancel. Stops on silence (the recognizer ends the utterance)
-     * or tap.
+     * offers stop/cancel. Pauses between utterances do not end the take, so it
+     * stops on a tap (or when the composer is backgrounded).
      */
     data class Live(val elapsedMs: Long) : DictationState
 

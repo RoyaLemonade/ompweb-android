@@ -638,4 +638,70 @@ class DictationTest {
         assertEquals("nothing to restore after a cancel", null, buffer.onCancel("draft"))
         assertFalse(buffer.active)
     }
+
+    @Test
+    fun `an utterance after a pause is kept instead of being replaced`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onPartial("Reply with", 10, "hallo")!!
+        assertEquals("Reply with hallo", first.text)
+
+        // The speaker pauses: the recognizer finalizes the utterance and
+        // starts the next one from an empty hypothesis (on a Pixel the
+        // hypothesis after the pause contains only the new words).
+        buffer.onSegment(first.text, first.caret, "hallo")
+        val second = buffer.onPartial(first.text, first.caret, "wie geht es dir")
+
+        assertEquals("Reply with hallo wie geht es dir", second?.text)
+        assertEquals("the take keeps what was said before the pause", "hallo wie geht es dir", buffer.text)
+    }
+
+    @Test
+    fun `a hypothesis that repeats the finalized utterance is not duplicated`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onPartial("", 0, "hallo du")!!
+        buffer.onSegment(first.text, first.caret, "hallo du")
+
+        val next = buffer.onPartial(first.text, first.caret, "hallo du wie geht es dir")
+
+        assertEquals("hallo du wie geht es dir", next?.text)
+    }
+
+    @Test
+    fun `a final that repeats the utterances of the take is not duplicated`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onPartial("draft", 5, "hallo")!!
+        buffer.onSegment(first.text, first.caret, "hallo")
+        val second = buffer.onPartial(first.text, first.caret, "hallo wie")!!
+        assertEquals("draft hallo wie", second.text)
+
+        val final = buffer.onFinal(second.text, second.caret, "Hallo wie geht es dir.")
+
+        assertEquals("draft Hallo wie geht es dir.", final?.text)
+    }
+
+    @Test
+    fun `a blank final keeps every finalized utterance of the take`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onPartial("", 0, "hallo")!!
+        buffer.onSegment(first.text, first.caret, "hallo")
+        val second = buffer.onPartial(first.text, first.caret, "hallo du")!!
+
+        val final = buffer.onFinal(second.text, second.caret, "")
+
+        assertEquals("hallo du", final?.text)
+        assertFalse("the capture is finished", buffer.active)
+    }
+
+    @Test
+    fun `a user edit after a pause keeps the visible text and re-anchors`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onPartial("draft", 5, "hallo")!!
+        buffer.onSegment(first.text, first.caret, "hallo")
+
+        // The user typed after the live text; the caret is now after the edit.
+        val edited = "${first.text}!"
+        val next = buffer.onPartial(edited, edited.length, "wie")
+
+        assertEquals("draft hallo! wie", next?.text)
+    }
 }

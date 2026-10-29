@@ -107,6 +107,15 @@ class DictationViewModelTest {
         throw AssertionError("timed out waiting for $what")
     }
 
+    private fun awaitFor(what: String, millis: Long, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + millis
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            Thread.sleep(10)
+        }
+        if (!condition()) throw AssertionError("timed out waiting for $what")
+    }
+
     @Test
     fun `the next engine follows the setting and the server's STT answer`() {
         val origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 3000)
@@ -187,6 +196,51 @@ class DictationViewModelTest {
         assertTrue(vm.state.value is DictationState.Idle)
         assertEquals("on-device dictation never uploads audio", 0, api.starts)
         assertTrue("the recognizer is released after the transcript", speech.released)
+    }
+
+    /**
+     * What the Pixel produces for "speech, pause, speech": one session, the
+     * utterance before the pause is finalized (a segment on Android 13+, a
+     * partial flagged final before that), and the next utterance starts from
+     * an empty hypothesis. Both utterances belong to the same take.
+     */
+    @Test
+    fun `speech before and after a pause both stay in the field`() {
+        val vm = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"))
+        vm.start(SttAfter.Insert)
+        val listener = speech.listener!!
+
+        listener.onPartial("hallo")
+        assertEquals("Reply with hallo", text)
+
+        listener.onSegment("hallo")
+        assertEquals("the finalized utterance stays visible", "Reply with hallo", text)
+
+        listener.onPartial("wie geht es dir")
+        assertEquals(
+            "the next utterance is appended, not put in place of the first",
+            "Reply with hallo wie geht es dir",
+            text,
+        )
+
+        listener.onFinal("Hallo wie geht es dir.")
+        assertEquals("the full transcript replaces the take once", "Reply with Hallo wie geht es dir.", text)
+        assertTrue(vm.state.value is DictationState.Idle)
+    }
+
+    @Test
+    fun `the stop fallback keeps every utterance when the recognizer never answers`() {
+        val vm = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"))
+        vm.start(SttAfter.Insert)
+        val listener = speech.listener!!
+
+        listener.onPartial("hallo")
+        listener.onSegment("hallo")
+        listener.onPartial("wie geht es dir")
+
+        vm.stop()
+        awaitFor("the fallback commit", 4_000) { text == "Reply with hallo wie geht es dir" }
+        assertEquals("both utterances survive the missing answer", "Reply with hallo wie geht es dir", text)
     }
 
     @Test
