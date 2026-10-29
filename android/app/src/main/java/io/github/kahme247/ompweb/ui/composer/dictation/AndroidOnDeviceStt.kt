@@ -4,12 +4,17 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
+import android.speech.RecognitionSupport
+import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.os.Bundle
+import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 
 /**
  * [OnDeviceStt] over Android's [SpeechRecognizer].
@@ -18,8 +23,15 @@ import android.os.Bundle
  * API 31+); without an installed on-device model the class reports
  * [OnDeviceSttError.NoRecognizer] instead of falling back to the default
  * recognizer, which may send the audio over the network while the UI promises
- * on-device processing. The intent asks for partial results, a short silence
- * window (the utterance ends itself) and offline preference.
+ * on-device processing. The intent asks for partial results, a silence window
+ * that ends the utterance after the speaker pauses and offline preference.
+ *
+ * The language model is checked before listening (API 33+,
+ * `checkRecognitionSupport`): every take is a question to a recognizer that
+ * may not have the model for the picked language, and a silent give-up there
+ * reads like the user said nothing. A missing model is downloaded
+ * (`triggerModelDownload`) and reported as such; a language this phone cannot
+ * recognize on-device is reported as unsupported.
  *
  * `RECORD_AUDIO` is requested by the composer before dictation starts, so this
  * class never asks for permissions itself.
@@ -29,8 +41,23 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
 
+    /** The support-query and model-download callbacks run on the main thread. */
+    private val mainExecutor = ContextCompat.getMainExecutor(appContext)
+
     private var recognizer: SpeechRecognizer? = null
     private var listener: OnDeviceStt.Listener? = null
+
+    /** The intent the current take runs with; the model download repeats it. */
+    private var activeIntent: Intent? = null
+
+    /**
+     * When listening started. A NO_MATCH/SPEECH_TIMEOUT that arrives right
+     * after is the recognizer giving up on its own, not the user's silence.
+     */
+    private var listeningSince = 0L
+
+    /** The user ended this take; a late model-check answer must not start it. */
+    private var stopRequested = false
 
     override fun isOnDeviceAvailable(): Boolean = runCatching {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
@@ -48,8 +75,14 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
         release()
         this.listener = listener
         if (!isOnDeviceAvailable()) {
-            this.listener = null
-            listener.onError(OnDeviceSttError.NoRecognizer)
+            fail(OnDeviceSttError.NoRecognizer)
+            return
+        }
+        // The service matches the extra against its language packs; a blank tag
+        // cannot match anything and ends the take without a word.
+        val language = languageTag.trim()
+        if (language.isEmpty()) {
+            fail(OnDeviceSttError.LanguageUnsupported)
             return
         }
         // The recognizer factory itself needs API 31: spell the level out so
@@ -62,36 +95,24 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
             null
         }
         if (created == null) {
-            this.listener = null
-            listener.onError(OnDeviceSttError.NoRecognizer)
+            fail(OnDeviceSttError.NoRecognizer)
             return
         }
         recognizer = created
         created.setRecognitionListener(RecognitionAdapter())
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
-            // End the utterance on a pause instead of listening until the tap.
-            // The extras are spelled as integers: recognizer implementations
-            // read them with getIntExtra (a Long silently falls back to their
-            // default and would never end the take on silence).
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, MIN_SPEECH_MS)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MS)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MS)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        }
-        val started = runCatching { created.startListening(intent) }.isSuccess
-        if (!started) {
-            release()
-            listener.onError(OnDeviceSttError.NoRecognizer)
-        }
+        val intent = recognitionIntent(language)
+        activeIntent = intent
+        if (checkModel(created, intent, language)) return
+        listen(created, intent)
     }
 
     override fun stop() {
-        onMain { current -> runCatching { current.stopListening() } }
+        onMain { current ->
+            // The model check may still be in flight; a take the user ended
+            // must not start listening when its answer arrives.
+            stopRequested = true
+            runCatching { current.stopListening() }
+        }
     }
 
     override fun cancel() {
@@ -107,6 +128,8 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
         val current = recognizer
         recognizer = null
         listener = null
+        activeIntent = null
+        stopRequested = false
         if (current != null) {
             runCatching { current.setRecognitionListener(null) }
             runCatching { current.destroy() }
@@ -122,6 +145,141 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
     }
 
     private fun onMainThread(): Boolean = Looper.myLooper() == Looper.getMainLooper()
+
+    /**
+     * The intent for one take. No `EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS`:
+     * the on-device recognizer ends the input once that much audio has arrived,
+     * so a 500 ms minimum closed the microphone half a second after the tap and
+     * answered "No speech detected" before the user could start (logcat on a
+     * Pixel: microphone opened 16:07:00.526, close requested 16:07:01.026,
+     * `NO_SPEECH_DETECTED`). The complete-silence window stays: it ends the
+     * take after the speaker pauses, which is what the live strip promises.
+     */
+    private fun recognitionIntent(language: String): Intent =
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
+            // The extras are spelled as integers: recognizer implementations
+            // read them with getIntExtra (a Long silently falls back to their
+            // default and would never end the take on silence).
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MS)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        }
+
+    /**
+     * Asks the recognizer which on-device model it has for [language] (API 33+)
+     * and acts on the answer. Returns true when the check took over the take:
+     * either it starts listening from the answer or it ends with a model error.
+     */
+    private fun checkModel(created: SpeechRecognizer, intent: Intent, language: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+        val callback = object : RecognitionSupportCallback {
+            override fun onSupportResult(support: RecognitionSupport) {
+                applyModelAnswer(created, intent, language, support)
+            }
+
+            override fun onError(error: Int) {
+                applyModelError(created, error)
+            }
+        }
+        return runCatching { created.checkRecognitionSupport(intent, mainExecutor, callback) }.isSuccess
+    }
+
+    /** [checkModel]'s answer for the take that is in flight. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun applyModelAnswer(
+        created: SpeechRecognizer,
+        intent: Intent,
+        language: String,
+        support: RecognitionSupport,
+    ) {
+        if (!currentTake(created)) return
+        when (modelStatus(support, language)) {
+            ModelStatus.Installed -> listen(created, intent)
+            ModelStatus.Pending -> fail(OnDeviceSttError.LanguageDownloading)
+            ModelStatus.Missing -> fail(requestDownloadOr(OnDeviceSttError.LanguageMissing))
+            ModelStatus.Unsupported -> fail(OnDeviceSttError.LanguageUnsupported)
+        }
+    }
+
+    private fun applyModelError(created: SpeechRecognizer, error: Int) {
+        if (!currentTake(created)) return
+        fail(errorOf(error))
+    }
+
+    /**
+     * Whether an answer still belongs to the take that is running: the user may
+     * have stopped, cancelled or started another one while the check was out.
+     */
+    private fun currentTake(created: SpeechRecognizer): Boolean =
+        recognizer === created && listener != null
+
+    private enum class ModelStatus {
+        /** The model is on this phone. */
+        Installed,
+
+        /** Android is already downloading it. */
+        Pending,
+
+        /** The phone knows this language but the model is not installed yet. */
+        Missing,
+
+        /** This phone cannot recognize the language on-device. */
+        Unsupported,
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun modelStatus(support: RecognitionSupport, language: String): ModelStatus {
+        val installed = support.installedOnDeviceLanguages.orEmpty()
+        val pending = support.pendingOnDeviceLanguages.orEmpty()
+        val supported = support.supportedOnDeviceLanguages.orEmpty()
+        return when {
+            installed.has(language) -> ModelStatus.Installed
+            pending.has(language) -> ModelStatus.Pending
+            // A service that reports nothing cannot be judged here; let
+            // startListening answer instead of inventing a model error.
+            supported.isEmpty() -> ModelStatus.Installed
+            supported.has(language) -> ModelStatus.Missing
+            else -> ModelStatus.Unsupported
+        }
+    }
+
+    private fun List<String>.has(language: String): Boolean =
+        any { it.equals(language, ignoreCase = true) }
+
+    /**
+     * Asks Android to download the model for the current take's language.
+     * Returns [OnDeviceSttError.LanguageDownloading] when the request went out
+     * and [fallback] when this phone cannot download it.
+     */
+    // The one-argument form has existed since API 33; the listener overload is
+    // API 34 and this flow needs neither progress nor a completion callback —
+    // the next tap re-runs the model check.
+    @Suppress("DEPRECATION")
+    private fun requestDownloadOr(fallback: OnDeviceSttError): OnDeviceSttError {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return fallback
+        val current = recognizer ?: return fallback
+        val intent = activeIntent ?: return fallback
+        val requested = runCatching { current.triggerModelDownload(intent) }.isSuccess
+        return if (requested) OnDeviceSttError.LanguageDownloading else fallback
+    }
+
+    private fun listen(recognizer: SpeechRecognizer, intent: Intent) {
+        if (stopRequested) return
+        listeningSince = SystemClock.elapsedRealtime()
+        val started = runCatching { recognizer.startListening(intent) }.isSuccess
+        if (!started) fail(OnDeviceSttError.Client)
+    }
+
+    /** Reports [error] once to the listener of this take and destroys the recognizer. */
+    private fun fail(error: OnDeviceSttError) {
+        val target = listener
+        release()
+        target?.onError(error)
+    }
 
     /** Forwards the callbacks, then destroys the recognizer exactly once. */
     private inner class RecognitionAdapter : RecognitionListener {
@@ -140,9 +298,17 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
         }
 
         override fun onError(error: Int) {
-            val target = listener
-            release()
-            target?.onError(errorOf(error))
+            val mapped = errorOf(error)
+            val early = mapped == OnDeviceSttError.NoSpeech &&
+                SystemClock.elapsedRealtime() - listeningSince < EARLY_END_MS
+            when {
+                early -> fail(OnDeviceSttError.StoppedTooEarly)
+                // The recognizer just told us the model is missing: fetch it, so
+                // the next tap works, and report that rather than silence.
+                mapped == OnDeviceSttError.LanguageMissing ->
+                    fail(requestDownloadOr(OnDeviceSttError.LanguageMissing))
+                else -> fail(mapped)
+            }
         }
 
         override fun onReadyForSpeech(params: Bundle?) = Unit
@@ -164,8 +330,14 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
         }.getOrNull()
 
     private companion object {
-        const val MIN_SPEECH_MS = 500
+        /** Ends the take this long after the speaker stops talking. */
         const val SILENCE_MS = 1_500
+
+        /**
+         * A NO_MATCH/SPEECH_TIMEOUT inside this window never waited for the
+         * user; the recognizer's own listening window is several seconds.
+         */
+        const val EARLY_END_MS = 1_000L
 
         fun errorOf(error: Int): OnDeviceSttError = when (error) {
             SpeechRecognizer.ERROR_NO_MATCH,
@@ -175,10 +347,13 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
             SpeechRecognizer.ERROR_NETWORK,
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
             -> OnDeviceSttError.Offline
-            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
-            -> OnDeviceSttError.LanguageUnavailable
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> OnDeviceSttError.Busy
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> OnDeviceSttError.LanguageUnsupported
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> OnDeviceSttError.LanguageMissing
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+            SpeechRecognizer.ERROR_TOO_MANY_REQUESTS,
+            -> OnDeviceSttError.Busy
+            SpeechRecognizer.ERROR_AUDIO -> OnDeviceSttError.Audio
+            SpeechRecognizer.ERROR_CLIENT -> OnDeviceSttError.Client
             else -> OnDeviceSttError.Failed
         }
     }

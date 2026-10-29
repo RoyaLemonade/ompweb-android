@@ -34,7 +34,11 @@
 
     <string name="dictation_error_no_recognizer">Speech recognition on this phone is not available (needs Android 12+ and the offline language pack). Use server transcription or install the language pack.</string>
     <string name="dictation_error_offline">On-device speech recognition could not run. Try again.</string>
-    <string name="dictation_error_language">This language is not installed for on-device recognition. Pick another dictation language or download the language data.</string>
+    <string name="dictation_error_language">This phone cannot recognize that language on-device. Pick another dictation language.</string>
+    <string name="dictation_error_language_missing">The on-device language pack for %1$s is not installed and could not be downloaded. Install the language data in Android settings, or pick another dictation language.</string>
+    <string name="dictation_error_language_downloading">The on-device language pack for %1$s is not installed yet. Android is downloading it — try dictation again in a moment.</string>
     <string name="dictation_error_recognizer_busy">Speech recognition is busy. Try again in a moment.</string>
+    <string name="dictation_error_recognizer_not_ready">Speech recognition did not start on this phone. Try again.</string>
+    <string name="dictation_error_recognizer_stopped_early">Speech recognition stopped before it could hear you. Try again.</string>
     <string name="dictation_error_recognizer_failed">Speech recognition failed</string>
 </resources>

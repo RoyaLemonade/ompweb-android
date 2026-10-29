@@ -4,6 +4,7 @@ import io.github.kahme247.ompweb.data.SettingsSnapshot
 import io.github.kahme247.ompweb.domain.DictationEngine
 import io.github.kahme247.ompweb.domain.DictationState
 import io.github.kahme247.ompweb.domain.SttAfter
+import io.github.kahme247.ompweb.domain.dictationLanguageLabel
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.SttApi
 import io.github.kahme247.ompweb.net.SttStartOutcome
@@ -37,6 +38,9 @@ class DictationViewModelTest {
         offline = "offline",
         micUnavailable = "no recorder",
         noSpeech = "no speech",
+        languageUnsupported = "unsupported",
+        languageMissing = { "missing $it" },
+        languageDownloading = { "downloading $it" },
     )
 
     @After
@@ -252,6 +256,40 @@ class DictationViewModelTest {
         speech.listener!!.onError(OnDeviceSttError.NoSpeech)
         assertEquals("no speech", (vm.state.value as DictationState.Failed).message)
         assertEquals("Reply with", text)
+    }
+
+    @Test
+    fun `a missing language model names the language instead of claiming silence`() {
+        val vm = viewModel(
+            SettingsSnapshot(loaded = true, dictationEngine = "on_device", dictationLanguage = "fr-FR"),
+        )
+        vm.start(SttAfter.Insert)
+
+        speech.listener!!.onError(OnDeviceSttError.LanguageDownloading)
+
+        val state = vm.state.value as DictationState.Failed
+        assertEquals("downloading " + dictationLanguageLabel("fr-FR", Locale.GERMANY), state.message)
+        assertEquals("the field is untouched", "Reply with", text)
+    }
+
+    @Test
+    fun `an unsupported language does not read like the user stayed silent`() {
+        val vm = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"))
+        vm.start(SttAfter.Insert)
+
+        speech.listener!!.onError(OnDeviceSttError.LanguageUnsupported)
+
+        assertEquals("unsupported", (vm.state.value as DictationState.Failed).message)
+    }
+
+    @Test
+    fun `a recognizer that stops before it hears anything says so`() {
+        val vm = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"))
+        vm.start(SttAfter.Insert)
+
+        speech.listener!!.onError(OnDeviceSttError.StoppedTooEarly)
+
+        assertEquals(strings.recognizerStoppedEarly, (vm.state.value as DictationState.Failed).message)
     }
 
     @Test

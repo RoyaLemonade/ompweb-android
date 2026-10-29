@@ -20,6 +20,7 @@ import io.github.kahme247.ompweb.domain.LiveDictationBuffer
 import io.github.kahme247.ompweb.domain.LocalRecording
 import io.github.kahme247.ompweb.domain.SttAfter
 import io.github.kahme247.ompweb.domain.TextInsertion
+import io.github.kahme247.ompweb.domain.dictationLanguageLabel
 import io.github.kahme247.ompweb.domain.dictationLanguageTag
 import io.github.kahme247.ompweb.domain.resolveDictationEngine
 import io.github.kahme247.ompweb.net.ApiError
@@ -63,8 +64,20 @@ data class DictationStrings(
         "Speech recognition on this phone is not available (needs Android 12+ and the offline " +
             "language pack). Use server transcription or install the language pack.",
     val offline: String = "On-device speech recognition could not run. Try again.",
-    val languageUnavailable: String = "This language is not installed for on-device recognition",
+    val languageUnsupported: String =
+        "This phone cannot recognize that language on-device. Pick another dictation language.",
+    /** [String] is the language's display name, e.g. "German (Germany)". */
+    val languageMissing: (String) -> String = { language ->
+        "The on-device language pack for $language is not installed and could not be downloaded. " +
+            "Install the language data in Android settings, or pick another dictation language."
+    },
+    val languageDownloading: (String) -> String = { language ->
+        "The on-device language pack for $language is not installed yet. Android is downloading " +
+            "it — try dictation again in a moment."
+    },
     val recognizerBusy: String = "Speech recognition is busy",
+    val recognizerNotReady: String = "Speech recognition did not start on this phone. Try again.",
+    val recognizerStoppedEarly: String = "Speech recognition stopped before it could hear you. Try again.",
     val recognizerFailed: String = "Speech recognition failed",
 ) {
     companion object {
@@ -81,8 +94,16 @@ data class DictationStrings(
                 uploadInterrupted = app.getString(R.string.dictation_error_upload_interrupted),
                 noRecognizer = app.getString(R.string.dictation_error_no_recognizer),
                 offline = app.getString(R.string.dictation_error_offline),
-                languageUnavailable = app.getString(R.string.dictation_error_language),
+                languageUnsupported = app.getString(R.string.dictation_error_language),
+                languageMissing = { language ->
+                    app.getString(R.string.dictation_error_language_missing, language)
+                },
+                languageDownloading = { language ->
+                    app.getString(R.string.dictation_error_language_downloading, language)
+                },
                 recognizerBusy = app.getString(R.string.dictation_error_recognizer_busy),
+                recognizerNotReady = app.getString(R.string.dictation_error_recognizer_not_ready),
+                recognizerStoppedEarly = app.getString(R.string.dictation_error_recognizer_stopped_early),
                 recognizerFailed = app.getString(R.string.dictation_error_recognizer_failed),
             )
         }
@@ -177,6 +198,8 @@ class DictationViewModel(
     private var liveActive = false
     private var livePartial = ""
     private var liveStartedAt = 0L
+    /** The BCP-47 tag of the running take, for the failure message. */
+    private var liveLanguage = ""
     private var liveJob: Job? = null
     /** Safety net when the recognizer never answers a stop/cancel. */
     private var liveStopJob: Job? = null
@@ -329,6 +352,7 @@ class DictationViewModel(
         liveActive = true
         publish()
         val language = dictationLanguageTag(settings?.value?.dictationLanguage, deviceLocale)
+        liveLanguage = language
         speech.start(language, liveListener)
         startLiveTicker()
     }
@@ -352,13 +376,20 @@ class DictationViewModel(
         override fun onError(error: OnDeviceSttError) {
             if (!liveActive) return
             val spoken = livePartial
+            // The language the take ran with, so a model message names it.
+            val languageLabel = dictationLanguageLabel(liveLanguage, deviceLocale)
             val message = when (error) {
                 OnDeviceSttError.NoRecognizer -> strings.noRecognizer
                 OnDeviceSttError.Permission -> strings.micDenied
                 OnDeviceSttError.Offline -> strings.offline
-                OnDeviceSttError.LanguageUnavailable -> strings.languageUnavailable
+                OnDeviceSttError.LanguageUnsupported -> strings.languageUnsupported
+                OnDeviceSttError.LanguageMissing -> strings.languageMissing(languageLabel)
+                OnDeviceSttError.LanguageDownloading -> strings.languageDownloading(languageLabel)
                 OnDeviceSttError.Busy -> strings.recognizerBusy
+                OnDeviceSttError.Client -> strings.recognizerNotReady
+                OnDeviceSttError.Audio -> strings.micUnavailable
                 OnDeviceSttError.NoSpeech -> if (spoken.isEmpty()) strings.noSpeech else null
+                OnDeviceSttError.StoppedTooEarly -> strings.recognizerStoppedEarly
                 OnDeviceSttError.Failed -> strings.recognizerFailed
             }
             commitLive(spoken = spoken, message = message)
