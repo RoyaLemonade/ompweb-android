@@ -1,5 +1,6 @@
 package io.github.kahme247.ompweb.net
 
+import io.github.kahme247.ompweb.domain.ServerSttSupport
 import io.github.kahme247.ompweb.domain.SttAfter
 import io.github.kahme247.ompweb.domain.SttJobStatus
 import java.util.concurrent.TimeUnit
@@ -10,6 +11,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -109,6 +111,31 @@ class SttApiTest {
 
         assertEquals(SttStartOutcome.Rejected("Too many transcriptions in progress"), busy)
         assertEquals(SttStartOutcome.Rejected("Audio file too large (max 25MB)"), tooLarge)
+    }
+
+    @Test
+    fun `the configuration probe sends no audio and reads only definitive answers`() = runBlocking {
+        server.enqueue(json(501, """{"error":"STT not configured. Set OMP_WEB_STT_ENDPOINT or OMP_WEB_STT_MODEL."}"""))
+        server.enqueue(json(400, """{"error":"Audio file is required","code":"missing_audio_file"}"""))
+        server.enqueue(json(401, """{"error":"Unauthorized"}"""))
+        server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
+        server.enqueue(MockResponse().setResponseCode(404).setBody("not found"))
+        server.enqueue(json(400, """{"error":"Invalid scope","code":"invalid_scope"}"""))
+
+        assertEquals(ServerSttSupport.NotConfigured, api.serverSupport())
+        assertEquals(ServerSttSupport.Available, api.serverSupport())
+        assertEquals("signed out is not a statement about STT", ServerSttSupport.Unknown, api.serverSupport())
+        assertEquals("a server error is not a statement about STT", ServerSttSupport.Unknown, api.serverSupport())
+        assertEquals("no route means no server STT", ServerSttSupport.NotConfigured, api.serverSupport())
+        assertEquals("an unrelated 400 is not proof of configuration", ServerSttSupport.Unknown, api.serverSupport())
+
+        val probe = server.takeRequest()
+        assertEquals("POST", probe.method)
+        assertEquals("/api/stt", probe.path)
+        val body = probe.body.readUtf8()
+        assertFalse("the probe uploads no audio", body.contains("""name="file""""))
+        assertFalse("the probe names no composer", body.contains("""name="scope""""))
+        assertTrue("the probe starts no job", !body.contains("jobId"))
     }
 
     @Test

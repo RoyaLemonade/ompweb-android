@@ -2,6 +2,7 @@ package io.github.kahme247.ompweb.ui.sessions
 
 import androidx.lifecycle.ViewModelStore
 import io.github.kahme247.ompweb.domain.ComposerImage
+import io.github.kahme247.ompweb.domain.ServerSttSupport
 import io.github.kahme247.ompweb.domain.SttAfter
 import io.github.kahme247.ompweb.domain.SttClaim
 import io.github.kahme247.ompweb.domain.SttJob
@@ -451,4 +452,6 @@ private class PaneSttApi : SttApi {
     override suspend fun retry(jobId: String, ownerToken: String): SttRetryOutcome = SttRetryOutcome.Missing
 
     override suspend fun audio(jobId: String): SttAudio? = null
+
+    override suspend fun serverSupport(): ServerSttSupport = ServerSttSupport.Unknown
 }

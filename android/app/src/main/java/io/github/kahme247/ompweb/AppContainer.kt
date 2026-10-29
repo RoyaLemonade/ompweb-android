@@ -20,6 +20,7 @@ import io.github.kahme247.ompweb.data.OriginBoundCookieJar
 import io.github.kahme247.ompweb.data.OriginScopedDraftStore
 import io.github.kahme247.ompweb.data.SessionCacheStore
 import io.github.kahme247.ompweb.data.SettingsStore
+import io.github.kahme247.ompweb.domain.ServerSttRegistry
 import io.github.kahme247.ompweb.events.EventMux
 import io.github.kahme247.ompweb.events.HttpEventTransport
 import io.github.kahme247.ompweb.net.ApiClient
@@ -94,6 +95,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -337,6 +339,24 @@ class AppContainer(context: Context) {
     private val sttApi = HttpSttApi(api)
     private val dictationStore = AndroidDictationStore(appContext)
 
+    /**
+     * Whether the configured server can transcribe, per origin. Auto dictation
+     * needs the answer before the microphone opens; a stock ompweb has no
+     * capability flag for it, so [SttApi.serverSupport] probes the route once
+     * per origin. This collector is the app-start and server-switch refresh;
+     * an unreachable probe stays unknown and the first mic tap asks again.
+     */
+    private val sttRegistry = ServerSttRegistry().also { registry ->
+        appScope.launch {
+            settings.snapshot
+                .map { snapshot -> snapshot.origin?.origin }
+                .distinctUntilChanged()
+                .collect { origin ->
+                    if (origin != null) registry.ensure(origin) { sttApi.serverSupport() }
+                }
+        }
+    }
+
     /** Slice B controls for the chat composer; `open()` rebinds it per session. */
     val chatControls = ComposerControlsViewModel(api, settings, appScope)
 
@@ -348,6 +368,7 @@ class AppContainer(context: Context) {
         DictationStrings.from(appContext),
         settings = settings.snapshot,
         onDevice = AndroidOnDeviceStt(appContext),
+        sttRegistry = sttRegistry,
     )
 
     val wordPredictor = WordPredictor(
@@ -395,6 +416,7 @@ class AppContainer(context: Context) {
         DictationStrings.from(appContext),
         settings = settings.snapshot,
         onDevice = AndroidOnDeviceStt(appContext),
+        sttRegistry = sttRegistry,
     )
 
     /**

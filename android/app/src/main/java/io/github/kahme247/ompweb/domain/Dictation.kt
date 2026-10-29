@@ -24,33 +24,43 @@ enum class DictationEnginePreference(val wire: String) {
 }
 
 /**
- * Resolves the preference against the installation. "Configured server" means
- * the app has a server origin; [serverSttUnconfigured] is the server's own 501
- * answer to an earlier upload ("STT not configured"), which makes Auto use the
- * phone from then on instead of failing the same way every time. The STT
- * provider itself is server-side configuration this client cannot see.
+ * Resolves the preference against the installation.
+ *
+ * Auto uploads to the server only when that server said it can transcribe
+ * ([ServerSttSupport.Available]). A configured server origin alone proves
+ * nothing: a stock ompweb answers `/api/stt` with 501 until
+ * `OMP_WEB_STT_ENDPOINT`/`OMP_WEB_STT_MODEL` is set and has no capability flag
+ * for it, so [ServerSttRegistry] probes the route before recording starts.
  *
  * [onDeviceAvailable] is the phone's installed on-device speech model (not a
- * cloud recognizer). Auto uses the phone only while a model is installed; with
- * a server it stays on the server path, and with neither it fails with the
- * no-model error. An explicit [DictationEnginePreference.ON_DEVICE] is kept and
- * fails the same way instead of silently uploading audio.
+ * cloud recognizer). Without a positive server answer Auto uses the phone; a
+ * phone without a model is still chosen when the server said it cannot
+ * transcribe (the start then explains the missing model — Auto never uploads
+ * a take to a server that cannot transcribe it). Only a server whose answer is
+ * still [ServerSttSupport.Unknown] stays the last resort for a phone without a
+ * model, because the upload then reports the real problem (offline, signed
+ * out) instead of a misleading missing-model message.
+ *
+ * An explicit [DictationEnginePreference.SERVER] always uploads and an explicit
+ * [DictationEnginePreference.ON_DEVICE] always fails with the no-model error
+ * instead of silently uploading audio.
  */
 fun resolveDictationEngine(
     preference: DictationEnginePreference,
     serverConfigured: Boolean,
-    serverSttUnconfigured: Boolean = false,
+    serverStt: ServerSttSupport = ServerSttSupport.Unknown,
     onDeviceAvailable: Boolean = true,
 ): DictationEngine = when (preference) {
     DictationEnginePreference.SERVER -> DictationEngine.SERVER
     DictationEnginePreference.ON_DEVICE -> DictationEngine.ON_DEVICE
     DictationEnginePreference.AUTO -> when {
-        serverConfigured && !serverSttUnconfigured -> DictationEngine.SERVER
+        serverConfigured && serverStt == ServerSttSupport.Available -> DictationEngine.SERVER
         onDeviceAvailable -> DictationEngine.ON_DEVICE
-        // No local model: the server is the only engine left (it reports its
-        // own failure); without a server the on-device start reports the
-        // missing model instead of reaching for a cloud recognizer.
-        serverConfigured -> DictationEngine.SERVER
+        // No local model: the server is the only engine left. A server that
+        // said it cannot transcribe is not tried (its start reports the
+        // missing model instead); an unknown one may just have been asked
+        // while offline, so its upload reports the real failure.
+        serverConfigured && serverStt == ServerSttSupport.Unknown -> DictationEngine.SERVER
         else -> DictationEngine.ON_DEVICE
     }
 }
@@ -267,7 +277,16 @@ sealed interface DictationState {
 
     data class Transcribing(val elapsedMs: Long) : DictationState
 
-    data class Failed(val message: String, val canRetry: Boolean) : DictationState
+    /**
+     * A capture failed. [canDictateOnDevice] marks the case where Auto learned
+     * that the server cannot transcribe: the deck offers a one-tap on-device
+     * take instead (the failed recording stays local for playback).
+     */
+    data class Failed(
+        val message: String,
+        val canRetry: Boolean,
+        val canDictateOnDevice: Boolean = false,
+    ) : DictationState
 
     /** The job was claimed or discarded elsewhere; the composer stands down. */
     data object Gone : DictationState

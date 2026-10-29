@@ -27,6 +27,8 @@
     <string name="dictation_error_job_missing">Transcription job not found</string>
     <string name="dictation_error_busy">Too many transcriptions in progress</string>
     <string name="dictation_error_upload_interrupted">Recording not transcribed yet</string>
+    <string name="dictation_error_server_no_stt">The server cannot transcribe (speech-to-text is not configured). The recording is kept on this phone, but on-device dictation cannot reuse it.</string>
+    <string name="dictation_on_device_instead">Dictate on this phone instead</string>
 
     <string name="dictation_live_listening">Listening…</string>
     <string name="dictation_live_stop">Done</string>

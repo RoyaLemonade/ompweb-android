@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.domain
 
 import java.util.Locale
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -363,86 +364,60 @@ class DictationTest {
     // --- dictation engine --------------------------------------------------
 
     @Test
-    fun `auto uses the server when one is configured and the phone otherwise`() {
+    fun `auto uploads only to a server that said it can transcribe`() {
         assertEquals(
-            DictationEngine.SERVER,
-            resolveDictationEngine(DictationEnginePreference.AUTO, serverConfigured = true),
-        )
-        assertEquals(
-            DictationEngine.ON_DEVICE,
-            resolveDictationEngine(DictationEnginePreference.AUTO, serverConfigured = false),
-        )
-    }
-
-    @Test
-    fun `auto falls back to the phone after the server reported no STT`() {
-        assertEquals(
-            DictationEngine.ON_DEVICE,
-            resolveDictationEngine(
-                DictationEnginePreference.AUTO,
-                serverConfigured = true,
-                serverSttUnconfigured = true,
-            ),
-        )
-        assertEquals(
-            "an explicit server choice still asks the server",
-            DictationEngine.SERVER,
-            resolveDictationEngine(
-                DictationEnginePreference.SERVER,
-                serverConfigured = true,
-                serverSttUnconfigured = true,
-            ),
-        )
-    }
-
-    @Test
-    fun `auto never picks a phone without an installed model`() {
-        assertEquals(
-            "auto without a model uses the configured server path",
+            "a positive answer is the only way Auto reaches the server",
             DictationEngine.SERVER,
             resolveDictationEngine(
                 DictationEnginePreference.AUTO,
                 serverConfigured = true,
-                onDeviceAvailable = false,
+                serverStt = ServerSttSupport.Available,
             ),
         )
         assertEquals(
-            "the explicit on-device choice still surfaces the missing model",
-            DictationEngine.ON_DEVICE,
-            resolveDictationEngine(
-                DictationEnginePreference.ON_DEVICE,
-                serverConfigured = true,
-                onDeviceAvailable = false,
-            ),
-        )
-    }
-
-    @Test
-    fun `an explicit engine wins over the server state`() {
-        assertEquals(
-            DictationEngine.ON_DEVICE,
-            resolveDictationEngine(DictationEnginePreference.ON_DEVICE, serverConfigured = true),
-        )
-        assertEquals(
-            DictationEngine.SERVER,
-            resolveDictationEngine(DictationEnginePreference.SERVER, serverConfigured = false),
-        )
-    }
-
-    @Test
-    fun `auto never lands on the phone without an on-device model`() {
-        assertEquals(
-            "a configured server stays the engine",
+            "no local model needed: the server transcribes",
             DictationEngine.SERVER,
             resolveDictationEngine(
                 DictationEnginePreference.AUTO,
                 serverConfigured = true,
-                serverSttUnconfigured = true,
+                serverStt = ServerSttSupport.Available,
                 onDeviceAvailable = false,
             ),
         )
         assertEquals(
-            "without any server the on-device start reports the missing model",
+            "a stock ompweb answers 501: Auto uses the phone",
+            DictationEngine.ON_DEVICE,
+            resolveDictationEngine(
+                DictationEnginePreference.AUTO,
+                serverConfigured = true,
+                serverStt = ServerSttSupport.NotConfigured,
+            ),
+        )
+        assertEquals(
+            "unknown means no positive signal: the phone when it has a model",
+            DictationEngine.ON_DEVICE,
+            resolveDictationEngine(
+                DictationEnginePreference.AUTO,
+                serverConfigured = true,
+                serverStt = ServerSttSupport.Unknown,
+            ),
+        )
+    }
+
+    @Test
+    fun `auto never uploads to a server that cannot transcribe, even without a model`() {
+        assertEquals(
+            "the phone's start explains the missing model instead of a doomed upload",
+            DictationEngine.ON_DEVICE,
+            resolveDictationEngine(
+                DictationEnginePreference.AUTO,
+                serverConfigured = true,
+                serverStt = ServerSttSupport.NotConfigured,
+                onDeviceAvailable = false,
+            ),
+        )
+        assertEquals(
+            "no server at all stays on the phone",
             DictationEngine.ON_DEVICE,
             resolveDictationEngine(
                 DictationEnginePreference.AUTO,
@@ -451,14 +426,98 @@ class DictationTest {
             ),
         )
         assertEquals(
-            "the explicit choice is kept so its start can explain the missing model",
-            DictationEngine.ON_DEVICE,
+            "an unasked server remains the last resort without a model",
+            DictationEngine.SERVER,
             resolveDictationEngine(
-                DictationEnginePreference.ON_DEVICE,
+                DictationEnginePreference.AUTO,
                 serverConfigured = true,
+                serverStt = ServerSttSupport.Unknown,
                 onDeviceAvailable = false,
             ),
         )
+    }
+
+    @Test
+    fun `an explicit engine wins over the server's answer`() {
+        for (support in ServerSttSupport.entries) {
+            assertEquals(
+                "an explicit server choice still uploads for $support",
+                DictationEngine.SERVER,
+                resolveDictationEngine(
+                    DictationEnginePreference.SERVER,
+                    serverConfigured = true,
+                    serverStt = support,
+                    onDeviceAvailable = false,
+                ),
+            )
+            assertEquals(
+                "the explicit on-device choice always stays on the phone for $support",
+                DictationEngine.ON_DEVICE,
+                resolveDictationEngine(
+                    DictationEnginePreference.ON_DEVICE,
+                    serverConfigured = true,
+                    serverStt = support,
+                ),
+            )
+        }
+        assertEquals(
+            "server without an origin",
+            DictationEngine.SERVER,
+            resolveDictationEngine(DictationEnginePreference.SERVER, serverConfigured = false),
+        )
+    }
+
+    @Test
+    fun `the server answer is cached per origin and an unknown one is retried`() = runBlocking {
+        val registry = ServerSttRegistry()
+        assertEquals(ServerSttSupport.Unknown, registry.get("http://a:30177"))
+        assertEquals("no origin, no answer", ServerSttSupport.Unknown, registry.get(null))
+
+        var probes = 0
+        assertEquals(
+            ServerSttSupport.Available,
+            registry.ensure("http://a:30177") { probes++; ServerSttSupport.Available },
+        )
+        assertEquals(
+            "a cached answer is reused",
+            ServerSttSupport.Available,
+            registry.ensure("http://a:30177") { probes++; ServerSttSupport.NotConfigured },
+        )
+        assertEquals(1, probes)
+        assertEquals(
+            "another server is a separate question",
+            ServerSttSupport.Unknown,
+            registry.get("http://b:30177"),
+        )
+
+        assertEquals(
+            "an unknown probe answer is not remembered",
+            ServerSttSupport.Unknown,
+            registry.ensure("http://c:30177") { ServerSttSupport.Unknown },
+        )
+        assertEquals(
+            "the next attempt asks again",
+            ServerSttSupport.NotConfigured,
+            registry.ensure("http://c:30177") { ServerSttSupport.NotConfigured },
+        )
+        assertEquals(
+            ServerSttSupport.NotConfigured,
+            registry.ensure("http://c:30177") { ServerSttSupport.Available },
+        )
+
+        assertEquals(
+            "a failed probe leaves the origin unknown",
+            ServerSttSupport.Unknown,
+            registry.ensure("http://d:30177") { throw java.io.IOException("offline") },
+        )
+        assertEquals(ServerSttSupport.Unknown, registry.get("http://d:30177"))
+
+        registry.mark("http://a:30177", ServerSttSupport.NotConfigured)
+        assertEquals(ServerSttSupport.NotConfigured, registry.get("http://a:30177"))
+        registry.mark("http://a:30177", ServerSttSupport.Unknown)
+        assertEquals("unknown never overwrites a fact", ServerSttSupport.NotConfigured, registry.get("http://a:30177"))
+        registry.mark(null, ServerSttSupport.NotConfigured)
+        assertEquals(ServerSttSupport.Unknown, registry.get(null))
     }
 
     @Test

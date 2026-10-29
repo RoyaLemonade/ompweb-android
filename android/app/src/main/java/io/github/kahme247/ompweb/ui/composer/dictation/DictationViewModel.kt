@@ -1,9 +1,7 @@
 package io.github.kahme247.ompweb.ui.composer.dictation
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.media.MediaPlayer
-import android.media.MediaRecorder
 import android.os.SystemClock
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.data.SettingsSnapshot
@@ -18,6 +16,8 @@ import io.github.kahme247.ompweb.domain.DictationStep
 import io.github.kahme247.ompweb.domain.DictationStore
 import io.github.kahme247.ompweb.domain.LiveDictationBuffer
 import io.github.kahme247.ompweb.domain.LocalRecording
+import io.github.kahme247.ompweb.domain.ServerSttRegistry
+import io.github.kahme247.ompweb.domain.ServerSttSupport
 import io.github.kahme247.ompweb.domain.SttAfter
 import io.github.kahme247.ompweb.domain.TextInsertion
 import io.github.kahme247.ompweb.domain.dictationLanguageLabel
@@ -45,6 +45,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The words this flow shows for its own failures (server messages pass
@@ -60,6 +61,13 @@ data class DictationStrings(
     val jobMissing: String = "Transcription job not found",
     val busy: String = "Too many transcriptions in progress",
     val uploadInterrupted: String = "Recording not transcribed yet",
+    /**
+     * Auto learned that the server cannot transcribe; the deck pairs it with
+     * the one-tap on-device take ([DictationState.Failed.canDictateOnDevice]).
+     */
+    val serverNoStt: String =
+        "The server cannot transcribe (speech-to-text is not configured). The recording is kept " +
+            "on this phone, but on-device dictation cannot reuse it.",
     val noRecognizer: String =
         "Speech recognition on this phone is not available (needs Android 12+ and the offline " +
             "language pack). Use server transcription or install the language pack.",
@@ -92,6 +100,7 @@ data class DictationStrings(
                 jobMissing = app.getString(R.string.dictation_error_job_missing),
                 busy = app.getString(R.string.dictation_error_busy),
                 uploadInterrupted = app.getString(R.string.dictation_error_upload_interrupted),
+                serverNoStt = app.getString(R.string.dictation_error_server_no_stt),
                 noRecognizer = app.getString(R.string.dictation_error_no_recognizer),
                 offline = app.getString(R.string.dictation_error_offline),
                 languageUnsupported = app.getString(R.string.dictation_error_language),
@@ -112,22 +121,23 @@ data class DictationStrings(
 }
 
 /**
- * Dictation for one composer: records with [MediaRecorder], hands the audio to
- * the server job of `/api/stt`, follows it, and delivers exactly one transcript
- * through [results]. The ownership/claim/retry/timeout rules live in the pure
- * [DictationMachine]; this class owns the Android recorders, the HTTP calls and
- * the timers.
+ * Dictation for one composer: records with a [VoiceRecorder], hands the audio
+ * to the server job of `/api/stt`, follows it, and delivers exactly one
+ * transcript through [results]. The ownership/claim/retry/timeout rules live in
+ * the pure [DictationMachine]; this class owns the Android recorders, the HTTP
+ * calls and the timers.
  *
  * Port of `hooks/useDictation.ts`: poll 500 ms, adopt this scope's newest job
  * every 4 s while visible and idle, claim with a per-instance token (the owner
  * token identifies the app installation), 6-minute follow deadline, retry with
  * the server's kept audio and fall back to the local copy.
  *
- * With "Dictation engine" On-device (or Auto without a connected server) the
- * recorder and the job protocol are bypassed: Android's [OnDeviceStt] feeds
- * partial transcripts that [LiveDictationBuffer] splices into the composer at
- * the caret, ending on silence or a tap. Server dictation stays exactly as it
- * was.
+ * With "Dictation engine" On-device (or Auto without a server that can
+ * transcribe) the recorder and the job protocol are bypassed: Android's
+ * [OnDeviceStt] feeds partial transcripts that [LiveDictationBuffer] splices
+ * into the composer at the caret, ending on silence or a tap. Auto asks
+ * [ServerSttRegistry] before the microphone opens, so a take is never uploaded
+ * to a server that cannot transcribe it.
  */
 class DictationViewModel(
     private val api: SttApi,
@@ -142,6 +152,13 @@ class DictationViewModel(
     private val onDevice: OnDeviceStt? = null,
     /** Device locale for the default recognition language. */
     private val deviceLocale: Locale = Locale.getDefault(),
+    /**
+     * The server's transcription answer, shared by both composers and warmed
+     * at app start; a private registry (JVM tests) probes on first use.
+     */
+    private val sttRegistry: ServerSttRegistry = ServerSttRegistry(),
+    /** The platform recorder; JVM tests pass a fake that writes the take. */
+    private val createRecorder: () -> VoiceRecorder = { AndroidVoiceRecorder() },
 ) {
 
     private val machine = DictationMachine(clock)
@@ -167,7 +184,7 @@ class DictationViewModel(
     private var scopeKey: String? = null
     private var visible = true
 
-    private var recorder: MediaRecorder? = null
+    private var recorder: VoiceRecorder? = null
     private var recordingFile: File? = null
     private var localRecording: LocalRecording? = null
     /** Downloaded server copy for playback; deleted the moment playback ends. */
@@ -189,8 +206,15 @@ class DictationViewModel(
     private var playbackJob: Job? = null
     private var player: MediaPlayer? = null
 
-    /** The server answered 501 on an upload: `Auto` uses the phone from then on. */
-    private var serverSttUnconfigured = false
+    /**
+     * Auto's take failed because the server answered 501: the recording stays
+     * local, no retry uploads it again, and the deck offers [dictateOnDevice].
+     */
+    private var serverNoSttFailure = false
+
+    /** An Auto start is asking the server before it opens the microphone. */
+    private var resolvingEngine = false
+    private var engineJob: Job? = null
 
     // --- On-device recognition ---------------------------------------------
 
@@ -259,6 +283,10 @@ class DictationViewModel(
         adoptJob = null
         retryJob?.cancel()
         retryJob = null
+        engineJob?.cancel()
+        engineJob = null
+        resolvingEngine = false
+        serverNoSttFailure = false
         // An upload in flight is not aborted (web): the server may already have
         // started its job, and the job stays adoptable for this scope.
         uploadToken?.detached = true
@@ -274,6 +302,7 @@ class DictationViewModel(
 
     fun start(after: SttAfter) {
         if (liveActive) return
+        if (resolvingEngine) return
         if (
             machine.phase == DictationPhase.Recording ||
             machine.phase == DictationPhase.Uploading ||
@@ -290,6 +319,32 @@ class DictationViewModel(
         stopRecorder(deleteFile = true)
         localRecording = null
         store.clearRecording()
+        serverNoSttFailure = false
+        val origin = currentOrigin()
+        // Auto must know before the microphone opens: a take uploaded to a
+        // server without STT cannot be transcribed (501), and its audio cannot
+        // be handed to the phone's recognizer afterwards.
+        if (currentPreference() == DictationEnginePreference.AUTO &&
+            origin != null &&
+            sttRegistry.get(origin) == ServerSttSupport.Unknown
+        ) {
+            resolvingEngine = true
+            engineJob = scope.launch {
+                withTimeoutOrNull(ENGINE_PROBE_TIMEOUT_MS) {
+                    sttRegistry.ensure(origin) { api.serverSupport() }
+                }
+                resolvingEngine = false
+                engineJob = null
+                // A scope switch or a backgrounded composer cancels this job
+                // or must not open the microphone out of sight.
+                if (isActive && visible) beginCapture(after)
+            }
+            return
+        }
+        beginCapture(after)
+    }
+
+    private fun beginCapture(after: SttAfter) {
         if (nextEngine() == DictationEngine.ON_DEVICE) {
             startOnDevice()
             return
@@ -306,20 +361,25 @@ class DictationViewModel(
 
     /**
      * Which engine the next capture uses: the setting, resolved against the
-     * connected server (see [resolveDictationEngine]). Public for the mic
-     * rationale, which must not claim the voice goes to the server when the
-     * phone transcribes it.
+     * server's own transcription answer (see [resolveDictationEngine]). Public
+     * for the mic rationale, which must not claim the voice goes to the server
+     * when the phone transcribes it.
      */
     fun nextEngine(): DictationEngine {
         val snapshot = settings?.value
         return resolveDictationEngine(
             preference = DictationEnginePreference.fromWire(snapshot?.dictationEngine),
-            // No settings (JVM tests) means the server path, exactly as before.
+            // No settings (JVM tests) assumes a server whose ability is unknown.
             serverConfigured = snapshot == null || snapshot.origin != null,
-            serverSttUnconfigured = serverSttUnconfigured,
+            serverStt = sttRegistry.get(snapshot?.origin?.origin),
             onDeviceAvailable = onDeviceModelAvailable,
         )
     }
+
+    private fun currentPreference(): DictationEnginePreference =
+        DictationEnginePreference.fromWire(settings?.value?.dictationEngine)
+
+    private fun currentOrigin(): String? = settings?.value?.origin?.origin
 
     /**
      * Cached per view model: the recognizer query is a binder round trip and
@@ -523,6 +583,10 @@ class DictationViewModel(
         followJob = null
         retryJob?.cancel()
         retryJob = null
+        engineJob?.cancel()
+        engineJob = null
+        resolvingEngine = false
+        serverNoSttFailure = false
         // An upload in flight ends its job once the server answers with its id.
         uploadToken?.discard = true
         uploadToken = null
@@ -552,6 +616,8 @@ class DictationViewModel(
 
     private fun upload(recording: LocalRecording, after: SttAfter) {
         val key = scopeKey
+        val origin = currentOrigin()
+        val preference = currentPreference()
         val token = UploadToken()
         uploadToken = token
         scope.launch {
@@ -591,8 +657,11 @@ class DictationViewModel(
                     follow(outcome.jobId)
                 }
                 is SttStartOutcome.Rejected -> {
-                    if (outcome.notConfigured) serverSttUnconfigured = true
-                    machine.fail(outcome.message)
+                    if (outcome.notConfigured) {
+                        onServerSttMissing(origin, preference, outcome.message)
+                    } else {
+                        machine.fail(outcome.message)
+                    }
                     publish()
                 }
                 null -> {
@@ -601,6 +670,44 @@ class DictationViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * A real upload answered 501: the origin is marked for every later take
+     * (any engine), and Auto keeps the take local with a one-tap on-device
+     * alternative instead of failing the same way on every attempt. Explicit
+     * Server keeps the server's own message and its retry, as chosen.
+     */
+    private fun onServerSttMissing(
+        origin: String?,
+        preference: DictationEnginePreference,
+        message: String,
+    ) {
+        sttRegistry.mark(origin, ServerSttSupport.NotConfigured)
+        if (preference == DictationEnginePreference.AUTO) {
+            serverNoSttFailure = true
+            machine.fail(strings.serverNoStt)
+        } else {
+            machine.fail(message)
+        }
+    }
+
+    /**
+     * "Dictate on this phone instead" after Auto learned that the server
+     * cannot transcribe. The kept take cannot be fed to the recognizer: this
+     * starts a fresh on-device capture and drops the unusable audio only now,
+     * on the user's explicit choice (until then it stayed playable).
+     */
+    fun dictateOnDevice() {
+        if (!serverNoSttFailure) return
+        serverNoSttFailure = false
+        stopPlayback()
+        localRecording?.file?.delete()
+        localRecording = null
+        store.clearRecording()
+        machine.reset()
+        publish()
+        startOnDevice()
     }
 
     private fun follow(jobId: String) {
@@ -753,8 +860,17 @@ class DictationViewModel(
                     publish()
                 }
                 is SttRetryOutcome.Rejected -> {
-                    if (outcome.notConfigured) serverSttUnconfigured = true
-                    machine.retryRejected(outcome.message)
+                    if (outcome.notConfigured) {
+                        sttRegistry.mark(currentOrigin(), ServerSttSupport.NotConfigured)
+                        if (currentPreference() == DictationEnginePreference.AUTO) {
+                            serverNoSttFailure = true
+                            machine.retryRejected(strings.serverNoStt)
+                        } else {
+                            machine.retryRejected(outcome.message)
+                        }
+                    } else {
+                        machine.retryRejected(outcome.message)
+                    }
                     publish()
                 }
                 null -> {
@@ -891,35 +1007,19 @@ class DictationViewModel(
 
     // --- Recorder -----------------------------------------------------------
 
-    // [MicButton] requests RECORD_AUDIO (with a rationale) before it calls
-    // [start]; lint cannot see across that call boundary.
-    @SuppressLint("MissingPermission")
-    @Suppress("DEPRECATION")
     private fun startRecorder(): Boolean {
         val file = store.scratchFile("rec-${System.currentTimeMillis()}.m4a")
-        var created: MediaRecorder? = null
-        return try {
-            created = MediaRecorder()
-            created.setAudioSource(MediaRecorder.AudioSource.MIC)
-            created.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            created.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            created.setAudioSamplingRate(44_100)
-            created.setAudioEncodingBitRate(96_000)
-            created.setAudioChannels(1)
-            created.setOutputFile(file.absolutePath)
-            created.prepare()
-            created.start()
-            recorder = created
-            recordingFile = file
-            level = 0f
-            true
-        } catch (_: Exception) {
-            runCatching { created?.release() }
+        val created = createRecorder()
+        if (!created.start(file)) {
+            created.release()
             file.delete()
-            recorder = null
             recordingFile = null
-            false
+            return false
         }
+        recorder = created
+        recordingFile = file
+        level = 0f
+        return true
     }
 
     /** Stops and releases the recorder; false when it never produced audio. */
@@ -930,14 +1030,8 @@ class DictationViewModel(
             if (deleteFile) recordingFile?.delete()
             return false
         }
-        var captured = false
-        try {
-            current.stop()
-            captured = true
-        } catch (_: RuntimeException) {
-            // Stopped before the first frame: the file carries no audio.
-        }
-        runCatching { current.release() }
+        val captured = current.stop()
+        current.release()
         if (deleteFile) {
             recordingFile?.delete()
             recordingFile = null
@@ -949,7 +1043,7 @@ class DictationViewModel(
         tickerJob?.cancel()
         tickerJob = scope.launch {
             while (isActive && machine.phase == DictationPhase.Recording) {
-                val amplitude = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
+                val amplitude = runCatching { recorder?.maxAmplitude() ?: 0 }.getOrDefault(0)
                 level = if (machine.paused) 0f else (amplitude / MAX_AMPLITUDE).coerceIn(0f, 1f)
                 if (machine.elapsedMs() >= DictationMachine.MAX_RECORDING_MS && !machine.paused) {
                     finish(machine.after)
@@ -983,7 +1077,13 @@ class DictationViewModel(
             )
             DictationPhase.Uploading -> DictationState.Uploading(machine.finalElapsedMs)
             DictationPhase.Transcribing -> DictationState.Transcribing(machine.finalElapsedMs)
-            DictationPhase.Failed -> DictationState.Failed(displayMessage(machine.message), machine.canRetry)
+            DictationPhase.Failed -> DictationState.Failed(
+                message = displayMessage(machine.message),
+                // A retry would upload the same take to a server that just
+                // said it cannot transcribe; the deck offers the phone instead.
+                canRetry = machine.canRetry && !serverNoSttFailure,
+                canDictateOnDevice = serverNoSttFailure && onDeviceModelAvailable,
+            )
             DictationPhase.Gone -> DictationState.Gone
         }
     }
@@ -1022,5 +1122,11 @@ class DictationViewModel(
 
         /** How long a stopped on-device recognition may take to answer. */
         const val LIVE_RESULT_TIMEOUT_MS = 2_500L
+
+        /**
+         * How long Auto waits for the server's STT answer before it records:
+         * a slow probe falls back to the phone (the next tap asks again).
+         */
+        const val ENGINE_PROBE_TIMEOUT_MS = 4_000L
     }
 }

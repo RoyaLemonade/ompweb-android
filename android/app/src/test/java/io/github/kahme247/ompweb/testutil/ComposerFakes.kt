@@ -9,6 +9,7 @@ import io.github.kahme247.ompweb.data.SettingsSnapshot
 import io.github.kahme247.ompweb.domain.ActiveGoal
 import io.github.kahme247.ompweb.domain.DictationStore
 import io.github.kahme247.ompweb.domain.LocalRecording
+import io.github.kahme247.ompweb.domain.ServerSttSupport
 import io.github.kahme247.ompweb.domain.SttClaim
 import io.github.kahme247.ompweb.domain.SttJob
 import io.github.kahme247.ompweb.domain.SttAfter
@@ -22,6 +23,7 @@ import io.github.kahme247.ompweb.net.SttAudio
 import io.github.kahme247.ompweb.net.SttRetryOutcome
 import io.github.kahme247.ompweb.net.SttStartOutcome
 import io.github.kahme247.ompweb.ui.composer.dictation.OnDeviceStt
+import io.github.kahme247.ompweb.ui.composer.dictation.VoiceRecorder
 import java.io.File
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -166,6 +168,15 @@ class FakeComposerApi : ComposerControlsApi {
 
 /** Dictation API that never produces a job. */
 class FakeSttApi : SttApi {
+    /** The answer [serverSupport] gives; [ServerSttSupport.Unknown] by default. */
+    var support: ServerSttSupport = ServerSttSupport.Unknown
+
+    /** What an upload answers; null keeps the historical "not configured" refusal. */
+    var startResult: SttStartOutcome? = null
+
+    /** Calls in order, so a test can prove the probe came before the upload. */
+    val calls: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+
     override suspend fun start(
         scope: String?,
         owner: String,
@@ -173,7 +184,15 @@ class FakeSttApi : SttApi {
         audio: ByteArray,
         fileName: String,
         mimeType: String,
-    ): SttStartOutcome = SttStartOutcome.Rejected("not configured")
+    ): SttStartOutcome {
+        calls += "start"
+        return startResult ?: SttStartOutcome.Rejected("not configured")
+    }
+
+    override suspend fun serverSupport(): ServerSttSupport {
+        calls += "probe"
+        return support
+    }
 
     override suspend fun jobs(scope: String): List<SttJob> = emptyList()
 
@@ -189,10 +208,38 @@ class FakeSttApi : SttApi {
     override suspend fun audio(jobId: String): SttAudio? = null
 }
 
+/** Writes a small take so the upload path sees non-empty audio. */
+class FakeVoiceRecorder : VoiceRecorder {
+    var started = false
+    var stopped = false
+    var released = false
+
+    override fun start(file: File): Boolean {
+        started = true
+        return runCatching { file.writeBytes(byteArrayOf(1, 2, 3)) }.isSuccess
+    }
+
+    override fun pause() = Unit
+
+    override fun resume() = Unit
+
+    override fun maxAmplitude(): Int = 0
+
+    override fun stop(): Boolean {
+        stopped = true
+        return true
+    }
+
+    override fun release() {
+        released = true
+    }
+}
+
 /** Scratch files in the JVM temp directory. */
 class MemoryDictationStore : DictationStore {
     private var recording: LocalRecording? = null
-    private var keptScope: String? = null
+    var keptScope: String? = null
+        private set
 
     override fun ownerToken(): String = "test-owner"
 

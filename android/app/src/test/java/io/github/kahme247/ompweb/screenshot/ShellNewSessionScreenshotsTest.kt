@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.screenshot
 
 import io.github.kahme247.ompweb.net.ApiClient
+import io.github.kahme247.ompweb.domain.ServerSttSupport
 import io.github.kahme247.ompweb.domain.SttAfter
 import io.github.kahme247.ompweb.net.SttApi
 import io.github.kahme247.ompweb.net.SttAudio
@@ -103,5 +104,7 @@ class ShellNewSessionScreenshotsTest : ScreenshotTest() {
             error("not used in the screenshot")
 
         override suspend fun audio(jobId: String): SttAudio? = null
+
+        override suspend fun serverSupport(): ServerSttSupport = ServerSttSupport.Unknown
     }
 }

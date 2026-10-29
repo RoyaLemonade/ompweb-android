@@ -1,10 +1,12 @@
 package io.github.kahme247.ompweb.net
 
+import io.github.kahme247.ompweb.domain.ServerSttSupport
 import io.github.kahme247.ompweb.domain.SttAfter
 import io.github.kahme247.ompweb.domain.SttClaim
 import io.github.kahme247.ompweb.domain.SttJob
 import io.github.kahme247.ompweb.domain.SttJobStatus
 import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -56,6 +58,16 @@ interface SttApi {
 
     /** `GET /api/stt/{jobId}/audio` — the kept recording, for playback. */
     suspend fun audio(jobId: String): SttAudio?
+
+    /**
+     * Asks whether the server can transcribe at all, without uploading audio:
+     * `POST /api/stt` with an empty multipart body. The route checks
+     * `readSttConfig()` before it looks at the file, so 501 means "not
+     * configured" and 400 `missing_audio_file` means "configured"; both are
+     * answers, everything else is [ServerSttSupport.Unknown]. No job is
+     * started, no audio leaves the phone.
+     */
+    suspend fun serverSupport(): ServerSttSupport
 }
 
 /** `POST /api/stt` answer: a started job, or the server's refusal. */
@@ -207,6 +219,35 @@ class HttpSttApi(private val api: ApiClient) : SttApi {
         return SttAudio(response.body, mimeType)
     }
 
+    override suspend fun serverSupport(): ServerSttSupport {
+        // A well-formed, empty multipart body: the route answers
+        // `400 missing_audio_file` as soon as its configuration exists and
+        // 501 while it does not. The dummy part keeps the body parseable for
+        // every server generation; the route never reads it.
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("probe", "1")
+            .build()
+        val request = api.requestBuilder(STT_PATH).post(body).build()
+        return try {
+            val response = api.exchange(request)
+            val text = response.text()
+            when {
+                response.status == 501 -> ServerSttSupport.NotConfigured
+                response.status in 200..299 -> ServerSttSupport.Available
+                response.status == 400 && errorCode(text) == MISSING_AUDIO_CODE -> ServerSttSupport.Available
+                // No route at all (an older server), or no POST handler.
+                response.status == 404 || response.status == 405 -> ServerSttSupport.NotConfigured
+                else -> ServerSttSupport.Unknown
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Offline, signed out or a proxy error: not an answer about STT.
+            ServerSttSupport.Unknown
+        }
+    }
+
     private suspend fun readJob(request: okhttp3.Request): SttJob? {
         val response = api.exchange(request)
         if (response.status == 404) return null
@@ -232,6 +273,8 @@ class HttpSttApi(private val api: ApiClient) : SttApi {
     }
 
     private fun errorMessage(text: String): String? = parseObject(text)?.string("error")
+
+    private fun errorCode(text: String): String? = parseObject(text)?.string("code")
 
     private fun originOf(request: okhttp3.Request): ServerAddress =
         ServerAddress(request.url.scheme, request.url.host, request.url.port)
@@ -268,6 +311,9 @@ class HttpSttApi(private val api: ApiClient) : SttApi {
         const val TOO_LARGE = "Recording too large (max 25 MB)"
         const val BUSY = "Too many transcriptions in progress"
         const val REJECTED = "The recording was rejected"
+
+        /** `POST /api/stt` without a `file` part: the configuration exists. */
+        const val MISSING_AUDIO_CODE = "missing_audio_file"
 
         val json = Json { ignoreUnknownKeys = true }
     }

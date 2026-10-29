@@ -286,7 +286,7 @@ fun RecordingDeck(vm: DictationViewModel, modifier: Modifier = Modifier) {
                     text = current.message,
                     color = LocalOmpColors.current.text,
                     fontSize = 12.sp,
-                    maxLines = 2,
+                    maxLines = if (current.canDictateOnDevice) 3 else 2,
                     modifier = Modifier.weight(1f),
                 )
                 DeckButton(
@@ -304,6 +304,15 @@ fun RecordingDeck(vm: DictationViewModel, modifier: Modifier = Modifier) {
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = null, tint = LocalOmpColors.current.accent, modifier = Modifier.size(14.dp))
                     }
+                }
+            }
+            if (current.canDictateOnDevice) {
+                TextButton(onClick = { vm.dictateOnDevice() }) {
+                    Text(
+                        text = stringResource(R.string.dictation_on_device_instead),
+                        color = LocalOmpColors.current.accent,
+                        fontSize = 12.sp,
+                    )
                 }
             }
         }

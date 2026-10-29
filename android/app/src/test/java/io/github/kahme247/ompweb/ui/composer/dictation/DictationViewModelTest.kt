@@ -3,6 +3,8 @@ package io.github.kahme247.ompweb.ui.composer.dictation
 import io.github.kahme247.ompweb.data.SettingsSnapshot
 import io.github.kahme247.ompweb.domain.DictationEngine
 import io.github.kahme247.ompweb.domain.DictationState
+import io.github.kahme247.ompweb.domain.ServerSttRegistry
+import io.github.kahme247.ompweb.domain.ServerSttSupport
 import io.github.kahme247.ompweb.domain.SttAfter
 import io.github.kahme247.ompweb.domain.dictationLanguageLabel
 import io.github.kahme247.ompweb.net.ServerAddress
@@ -10,6 +12,7 @@ import io.github.kahme247.ompweb.net.SttApi
 import io.github.kahme247.ompweb.net.SttStartOutcome
 import io.github.kahme247.ompweb.testutil.FakeOnDeviceStt
 import io.github.kahme247.ompweb.testutil.FakeSttApi
+import io.github.kahme247.ompweb.testutil.FakeVoiceRecorder
 import io.github.kahme247.ompweb.testutil.MemoryDictationStore
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -54,18 +57,26 @@ class DictationViewModelTest {
     private var text = "Reply with"
     private var caret = text.length
 
-    private fun viewModel(settings: SettingsSnapshot): DictationViewModel {
+    private fun viewModel(
+        settings: SettingsSnapshot,
+        api: SttApi = this.api,
+        registry: ServerSttRegistry = ServerSttRegistry(),
+        recorder: VoiceRecorder = FakeVoiceRecorder(),
+        store: MemoryDictationStore = MemoryDictationStore(),
+    ): DictationViewModel {
         text = "Reply with"
         caret = text.length
         return DictationViewModel(
             api = api,
-            store = MemoryDictationStore(),
+            store = store,
             scope = scope,
             strings = strings,
             clock = { now },
             settings = MutableStateFlow(settings),
             onDevice = speech,
             deviceLocale = Locale.GERMANY,
+            sttRegistry = registry,
+            createRecorder = { recorder },
         ).also { vm ->
             vm.attachLiveField(
                 text = { text },
@@ -78,8 +89,27 @@ class DictationViewModelTest {
         }
     }
 
+    /** The upload reads the file on [Dispatchers.IO]; wait for its answer. */
+    private fun awaitFailed(vm: DictationViewModel): DictationState.Failed {
+        await("failure state, still ${vm.state.value}") { vm.state.value is DictationState.Failed }
+        return vm.state.value as DictationState.Failed
+    }
+
+    private fun awaitCalls(api: FakeSttApi, count: Int) {
+        await("$count calls, saw ${api.calls}") { api.calls.size >= count }
+    }
+
+    private fun await(what: String, condition: () -> Boolean) {
+        repeat(400) {
+            if (condition()) return
+            Thread.sleep(5)
+        }
+        throw AssertionError("timed out waiting for $what")
+    }
+
     @Test
-    fun `the next engine mirrors the setting and the server state`() {
+    fun `the next engine follows the setting and the server's STT answer`() {
+        val origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 3000)
         val onDevice = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"))
         assertEquals(DictationEngine.ON_DEVICE, onDevice.nextEngine())
 
@@ -91,20 +121,33 @@ class DictationViewModelTest {
         )
 
         val autoWithServer = viewModel(
-            SettingsSnapshot(
-                loaded = true,
-                origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 3000),
-                dictationEngine = "auto",
-            ),
+            SettingsSnapshot(loaded = true, origin = origin, dictationEngine = "auto"),
         )
-        assertEquals(DictationEngine.SERVER, autoWithServer.nextEngine())
+        assertEquals(
+            "a server that has not answered is not used",
+            DictationEngine.ON_DEVICE,
+            autoWithServer.nextEngine(),
+        )
+
+        val available = ServerSttRegistry().also { it.mark(origin.origin, ServerSttSupport.Available) }
+        val autoWithStt = viewModel(
+            SettingsSnapshot(loaded = true, origin = origin, dictationEngine = "auto"),
+            registry = available,
+        )
+        assertEquals(DictationEngine.SERVER, autoWithStt.nextEngine())
+
+        val unavailable = ServerSttRegistry().also {
+            it.mark(origin.origin, ServerSttSupport.NotConfigured)
+        }
+        val autoWithoutStt = viewModel(
+            SettingsSnapshot(loaded = true, origin = origin, dictationEngine = "auto"),
+            registry = unavailable,
+        )
+        assertEquals(DictationEngine.ON_DEVICE, autoWithoutStt.nextEngine())
 
         val server = viewModel(
-            SettingsSnapshot(
-                loaded = true,
-                origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 3000),
-                dictationEngine = "server",
-            ),
+            SettingsSnapshot(loaded = true, origin = origin, dictationEngine = "server"),
+            registry = unavailable,
         )
         assertEquals(DictationEngine.SERVER, server.nextEngine())
     }
@@ -157,18 +200,95 @@ class DictationViewModelTest {
     }
 
     @Test
-    fun `auto with a configured server keeps the server path`() {
+    fun `auto probes the server before recording and uploads when it can transcribe`() {
+        val origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 8080)
+        val api = FakeSttApi().apply {
+            support = ServerSttSupport.Available
+            startResult = SttStartOutcome.Accepted("job-1")
+        }
+        val recorder = FakeVoiceRecorder()
         val vm = viewModel(
-            SettingsSnapshot(
-                loaded = true,
-                origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 8080),
-            ),
+            SettingsSnapshot(loaded = true, origin = origin, dictationEngine = "auto"),
+            api = api,
+            recorder = recorder,
         )
 
         vm.start(SttAfter.Insert)
-        assertNull("the recognizer is not started", speech.listener)
-        assertFalse("no on-device state", vm.state.value is DictationState.Live)
-        assertEquals("nothing reaches the server without audio", 0, api.starts)
+        awaitCalls(api, 1)
+        assertEquals("the server is asked before the microphone opens", listOf("probe"), api.calls)
+        assertTrue("the server path records", recorder.started)
+        assertNull("the phone recognizer stays off", speech.listener)
+        assertFalse(vm.state.value is DictationState.Live)
+
+        vm.stop()
+        awaitCalls(api, 2)
+        assertEquals(listOf("probe", "start"), api.calls)
+    }
+
+    @Test
+    fun `auto keeps the take local when the server has no STT and starts the phone on request`() {
+        val origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 8080)
+        val api = FakeSttApi().apply {
+            support = ServerSttSupport.Available
+            startResult = SttStartOutcome.Rejected("STT not configured", notConfigured = true)
+        }
+        val registry = ServerSttRegistry()
+        val store = MemoryDictationStore()
+        val recorder = FakeVoiceRecorder()
+        val vm = viewModel(
+            SettingsSnapshot(loaded = true, origin = origin, dictationEngine = "auto"),
+            api = api,
+            registry = registry,
+            recorder = recorder,
+            store = store,
+        )
+        vm.bindScope("sessions/a")
+
+        vm.start(SttAfter.Insert)
+        await("the recorder starts after the probe") { recorder.started }
+        vm.stop()
+        val failed = awaitFailed(vm)
+
+        assertEquals(strings.serverNoStt, failed.message)
+        assertFalse("no retry uploads the same take to that server", failed.canRetry)
+        assertTrue("the deck offers the phone", failed.canDictateOnDevice)
+        assertTrue("the take stays playable", vm.canPlay())
+        assertEquals("the local copy is kept", "sessions/a", store.keptScope)
+        assertEquals("the origin is marked for later takes", ServerSttSupport.NotConfigured, registry.get(origin.origin))
+        assertEquals("the next Auto take is on-device", DictationEngine.ON_DEVICE, vm.nextEngine())
+
+        vm.dictateOnDevice()
+        assertTrue("the phone recognizer starts", speech.started)
+        assertTrue(vm.state.value is DictationState.Live)
+        assertNull("the explicit choice releases the unusable take", store.savedRecording("sessions/a"))
+    }
+
+    @Test
+    fun `an explicit server engine shows the server's message and stays on the server`() {
+        val origin = ServerAddress(scheme = "http", host = "127.0.0.1", port = 8080)
+        val api = FakeSttApi().apply {
+            startResult = SttStartOutcome.Rejected("STT not configured. Set OMP_WEB_STT_ENDPOINT.", notConfigured = true)
+        }
+        val registry = ServerSttRegistry()
+        val recorder = FakeVoiceRecorder()
+        val vm = viewModel(
+            SettingsSnapshot(loaded = true, origin = origin, dictationEngine = "server"),
+            api = api,
+            registry = registry,
+            recorder = recorder,
+        )
+
+        vm.start(SttAfter.Insert)
+        assertEquals("an explicit server choice does not probe first", 0, api.calls.size)
+        assertTrue("an explicit server choice records", recorder.started)
+        vm.stop()
+        val failed = awaitFailed(vm)
+
+        assertEquals("STT not configured. Set OMP_WEB_STT_ENDPOINT.", failed.message)
+        assertFalse("no on-device offer for a deliberate server choice", failed.canDictateOnDevice)
+        assertTrue("the take can be retried", failed.canRetry)
+        assertEquals(ServerSttSupport.NotConfigured, registry.get(origin.origin))
+        assertEquals("the explicit engine stays", DictationEngine.SERVER, vm.nextEngine())
     }
 
     @Test
