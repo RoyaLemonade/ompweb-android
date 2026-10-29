@@ -8,6 +8,9 @@ import io.github.kahme247.ompweb.domain.NavigationEntry
 import io.github.kahme247.ompweb.domain.NavigationHistory
 import io.github.kahme247.ompweb.domain.applyRunningTransition
 import io.github.kahme247.ompweb.domain.comparableProjectPath
+import io.github.kahme247.ompweb.domain.orderProjectsByActivity
+import io.github.kahme247.ompweb.domain.projectActivityCounts
+import io.github.kahme247.ompweb.domain.projectLastActivity
 import io.github.kahme247.ompweb.domain.pruneUnread
 import io.github.kahme247.ompweb.domain.transcriptToMarkdown
 import io.github.kahme247.ompweb.domain.workspaceKeyOf
@@ -679,21 +682,60 @@ class SessionsViewModel(
     /**
      * First successful project fetch: when nothing is stored, expand only the
      * active project (falling back to the top project) and remember it.
+     *
+     * "Top" is the row the pane renders first, not the server's first entry:
+     * the list is ordered by pins, running chats and newest activity, so a
+     * fresh install must not expand a project that sits below a pinned or
+     * running one.
      */
     private fun maybeSeedProjectExpansion() {
         val current = _state.value
         if (!current.projectsLoaded || current.expandedProjects != null) return
+        // The session list decides the order (activity, running placeholders).
+        // Seeding before it answers would freeze the server's first entry in
+        // place: the seed only runs once, later answers never revisit it.
+        if (current.loading) return
+        val ordered = orderedDisplayProjects(current)
         val activeKey = current.activeCwd?.let(::comparableProjectPath)
-        val seed = activeKey?.takeIf { key -> current.projects.any { comparableProjectPath(it.path) == key } }
-            ?: current.projects.firstOrNull()?.let { comparableProjectPath(it.path) }
+        val seed = activeKey?.takeIf { key -> ordered.any { comparableProjectPath(it.path) == key } }
+            ?: ordered.firstOrNull()?.let { comparableProjectPath(it.path) }
         val expanded = seed?.let { setOf(it) } ?: emptySet()
         _state.update {
             it.copy(
                 expandedProjects = expanded,
-                activeCwd = it.activeCwd ?: current.projects.firstOrNull()?.path,
+                activeCwd = it.activeCwd ?: ordered.firstOrNull()?.path,
             )
         }
         persistExpanded(expanded)
+    }
+
+    /**
+     * The order the sidebar renders for [state]: live placeholders included,
+     * pinned projects first, then running ones, then the newest session. It
+     * mirrors the pane's own derivation so the first expansion and the top row
+     * always name the same project.
+     */
+    private fun orderedDisplayProjects(state: SessionsUiState): List<ManagedProject> {
+        val displaySessions = withLivePlaceholders(
+            sessions = state.sessions,
+            runningIds = state.runningIds,
+            runningCwds = state.runningCwds,
+            exited = state.exited,
+            projects = state.projects,
+            activeCwd = state.activeCwd,
+        )
+        val activities = projectActivityCounts(
+            sessions = displaySessions,
+            runningIds = state.runningIds + state.elsewhere.keys,
+            unreadIds = state.unreadIds,
+            exitedIds = state.exited.keys,
+        )
+        return orderProjectsByActivity(
+            projects = withWorkspaceProjects(state.projects, displaySessions),
+            pinnedPaths = state.pinnedProjectPaths,
+            runningProjects = activities.filterValues { it.running > 0 }.keys,
+            lastActivity = projectLastActivity(displaySessions),
+        )
     }
 
     private fun pruneExpansion(projects: List<ManagedProject>) {

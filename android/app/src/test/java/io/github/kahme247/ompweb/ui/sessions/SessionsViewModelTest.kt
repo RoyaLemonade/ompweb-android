@@ -454,6 +454,57 @@ class SessionsViewModelTest {
     }
 
     @Test
+    fun `the first expansion seeds the top activity row, not the server's first project`() {
+        projectResponses.add(
+            json("""{"projects":[{"path":"/work/alpha"},{"path":"/work/beta"},{"path":"/work/gamma"}]}"""),
+        )
+        // gamma has the newest session, but beta runs: beta is the top row.
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[
+                    {"id":"s-alpha","cwd":"/work/alpha","modified":"2026-01-01T10:00:00.000Z"},
+                    {"id":"s-beta","cwd":"/work/beta","modified":"2026-02-01T10:00:00.000Z"},
+                    {"id":"s-gamma","cwd":"/work/gamma","modified":"2026-03-01T10:00:00.000Z"}],
+                   "runningSessionIds":["s-beta"]}""",
+            ),
+        )
+
+        viewModel.setActive(true)
+        waitFor("expansion seeded") { viewModel.state.value.expandedProjects != null }
+
+        assertEquals(setOf("/work/beta"), viewModel.state.value.expandedProjects)
+        assertEquals("/work/beta", viewModel.state.value.activeCwd)
+    }
+
+    @Test
+    fun `the first expansion follows a pin above the newest session`() {
+        val preferences = FakePreferences(
+            SettingsSnapshot(
+                loaded = true,
+                pinnedProjectsByOrigin = mapOf(address.origin to listOf("/work/alpha")),
+            ),
+        )
+        projectResponses.add(
+            json("""{"projects":[{"path":"/work/alpha"},{"path":"/work/beta"}]}"""),
+        )
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[
+                    {"id":"s-alpha","cwd":"/work/alpha","modified":"2026-01-01T10:00:00.000Z"},
+                    {"id":"s-beta","cwd":"/work/beta","modified":"2026-03-01T10:00:00.000Z"}],
+                   "runningSessionIds":[]}""",
+            ),
+        )
+        recreate(preferences)
+
+        viewModel.setActive(true)
+        waitFor("expansion seeded") { viewModel.state.value.expandedProjects != null }
+
+        assertEquals(setOf("/work/alpha"), viewModel.state.value.expandedProjects)
+        assertEquals("/work/alpha", viewModel.state.value.activeCwd)
+    }
+
+    @Test
     fun `a cold start keeps the persisted expansion and unread ids`() {
         val preferences = FakePreferences(
             SettingsSnapshot(

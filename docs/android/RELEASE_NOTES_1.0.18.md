@@ -11,25 +11,29 @@ screens, backed by your own ompweb server.
   another omp process), then everything else by the newest session in the
   project. Chats inside a project still sort newest first.
 - **Pin a project** — the project row's menu has *Pin project* / *Unpin
-  project*. Pins are stored per server origin, exactly like pinned sessions, and
-  the most recently pinned project leads the pinned group. Signing out,
-  switching servers or a rejected session forgets them; hiding a project drops
-  its pin.
+  project*, and a pinned row carries a pin marker next to its name (with the
+  label *Pinned project* for screen readers). Pins are stored per server
+  origin, exactly like pinned sessions, and the most recently pinned project
+  leads the pinned group. Signing out, switching servers or a rejected session
+  forgets the pins of the server you are leaving — another server's pins stay.
+  Hiding a project drops its pin.
 - **The list never jumps under your finger** — a recomputed order is held back
-  while you scroll, touch the list, keep a row menu open or type in the search
-  field, and is applied 1.5 s after the interaction ends. The decision is a pure
-  `ProjectOrderHold` with JVM tests, so the freeze and settle rules are pinned
-  without an emulator.
+  while you scroll, touch the list, keep a row menu open, focus the search field
+  or type a query, and is applied 1.5 s after the interaction ends. An open
+  search panel with an empty query is not an interaction, so a chat that starts
+  still moves its project to the top. The decision is a pure `ProjectOrderHold`
+  with JVM tests, so the freeze and settle rules are pinned without an emulator.
 - **Manual drag reordering is gone** — the long-press drag, the *Move up* /
   *Move down* menu items and the `sortOrder` PATCH are removed from the app.
   Pins replace the manual order; the server's project registry is not touched.
 - **Tests** — `ProjectOrderingTest` (pins > running > newest activity, stable
   ties, casing-only path matches, malformed timestamps),
-  `ProjectOrderHoldTest` (freeze during interaction, settle window, restart),
+  `ProjectOrderHoldTest` (freeze during interaction, settle window, restart,
+  cancelled gesture, backward clock jump, search-panel rule),
   `SettingsStorePinnedProjectsTest` (per-origin round-trip through DataStore,
-  clear on sign-out, session pins untouched) and the view-model pin tests
-  (origin scoping, newest pin first, unpin clears the origin entry, hiding a
-  project forgets its pin).
+  clearing only the origin being left, session pins untouched) and the view-model
+  tests (origin scoping, newest pin first, unpin clears the origin entry, hiding a
+  project forgets its pin, first expansion seeded from the top activity row).
 - **Version 1.0.18** (`versionCode` 10018).
 
 ## Updating

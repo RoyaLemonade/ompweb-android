@@ -1,5 +1,6 @@
 package io.github.kahme247.ompweb.ui.sessions
 
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -9,6 +10,8 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -125,6 +128,7 @@ import io.github.kahme247.ompweb.domain.coldStartRestoreStep
 import io.github.kahme247.ompweb.domain.comparableProjectPath
 import io.github.kahme247.ompweb.domain.explorerWorkspace
 import io.github.kahme247.ompweb.domain.groupSessionsByProject
+import io.github.kahme247.ompweb.domain.holdsProjectOrder
 import io.github.kahme247.ompweb.domain.projectActivityCounts
 import io.github.kahme247.ompweb.domain.sessionWorktreeRemoved
 import io.github.kahme247.ompweb.domain.sessionsShowsRefreshError
@@ -1112,6 +1116,12 @@ internal fun SessionListPane(
     onCopyId: (String) -> Unit,
     /** The shell's update announcement, shown below this pane's top bar. */
     updateBanner: @Composable () -> Unit = {},
+    /**
+     * Monotonic clock for the order gate (`ProjectOrderHold` decisions stay
+     * pure and take their time from the caller). Injected so a test can decide
+     * when the settle window has passed.
+     */
+    interactionClock: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var themePickerOpen by remember { mutableStateOf(false) }
@@ -1213,31 +1223,42 @@ internal fun SessionListPane(
     val listInteraction = remember { SessionListInteraction() }
     val orderHold = remember { ProjectOrderHold() }
     var orderTick by remember { mutableIntStateOf(0) }
-    var settleTick by remember { mutableIntStateOf(0) }
-    // Scroll, open row menus and the search field are Compose state; a finger
-    // on the list is reported by the pointer tracker on the list itself.
-    val interactingWithList = listState.isScrollInProgress ||
-        listInteraction.menuOpen ||
-        state.searchOpen
+    // Focus of the search field, reset whenever the panel opens or closes. The
+    // panel's visibility is not an interaction: an open field with an empty
+    // query still shows the whole list, and freezing it would keep a starting
+    // session out of the top row until the user closed the search.
+    val searchInteraction = remember(state.searchOpen) { MutableInteractionSource() }
+    val searchFocused by searchInteraction.collectIsFocusedAsState()
+    // A finger on the list is opened synchronously by the pointer tracker (before
+    // the first scroll arrives); this flag only makes the end of that gesture a
+    // composition event, so the settle window is re-armed even when the gesture
+    // was cancelled by the list leaving the composition.
+    var gestureActive by remember { mutableStateOf(false) }
+    val interactingWithList = holdsProjectOrder(
+        scrollInProgress = listState.isScrollInProgress,
+        menuOpen = listInteraction.menuOpen,
+        searchFocused = searchFocused,
+        searchQuery = state.searchQuery,
+    )
 
     // One begin/end pair per interaction stretch, so the gate's depth stays
     // balanced across recompositions and leaves.
     DisposableEffect(interactingWithList) {
         if (interactingWithList) {
             orderHold.beginInteraction()
-            onDispose { orderHold.endInteraction(System.currentTimeMillis()) }
+            onDispose { orderHold.endInteraction(interactionClock()) }
         } else {
             onDispose {}
         }
     }
 
     // Adopt the pending order once the list has been quiet long enough. A
-    // stretch of Compose-tracked interaction re-arms it on its end; a finger
-    // on the list does so through [settleTick].
-    LaunchedEffect(interactingWithList, settleTick) {
+    // stretch of Compose-tracked interaction re-arms it on its end; a gesture
+    // on the list does so when [gestureActive] falls back to false.
+    LaunchedEffect(interactingWithList, gestureActive) {
         if (interactingWithList) return@LaunchedEffect
         while (true) {
-            val wait = orderHold.settleDelayMillis(System.currentTimeMillis()) ?: break
+            val wait = orderHold.settleDelayMillis(interactionClock()) ?: break
             if (wait <= 0L) break
             delay(wait)
         }
@@ -1245,7 +1266,7 @@ internal fun SessionListPane(
     }
 
     LaunchedEffect(desiredOrderPaths, orderTick) {
-        val next = orderHold.order(desiredOrderPaths, System.currentTimeMillis())
+        val next = orderHold.order(desiredOrderPaths, interactionClock())
         if (frozenOrderPaths != next) frozenOrderPaths = next
     }
 
@@ -1277,6 +1298,7 @@ internal fun SessionListPane(
                                     )
                                 },
                                 singleLine = true,
+                                interactionSource = searchInteraction,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         } else {
@@ -1542,14 +1564,33 @@ internal fun SessionListPane(
                                     .pointerInput(orderHold) {
                                         // Freeze the order while a finger is on the
                                         // list, before the first scroll arrives.
-                                        awaitEachGesture {
-                                            awaitFirstDown(requireUnconsumed = false)
-                                            orderHold.beginInteraction()
-                                            do {
-                                                val event = awaitPointerEvent()
-                                            } while (event.changes.any { it.pressed })
-                                            orderHold.endInteraction(System.currentTimeMillis())
-                                            settleTick++
+                                        try {
+                                            awaitEachGesture {
+                                                awaitFirstDown(requireUnconsumed = false)
+                                                orderHold.beginInteraction()
+                                                gestureActive = true
+                                                try {
+                                                    do {
+                                                        val event = awaitPointerEvent()
+                                                    } while (event.changes.any { it.pressed })
+                                                } finally {
+                                                    // A cancelled gesture (the node
+                                                    // left the composition) closes
+                                                    // the gate here too; without
+                                                    // this the order would stay
+                                                    // frozen until the screen is
+                                                    // left. `endInteraction` is a
+                                                    // no-op when the gate is shut.
+                                                    orderHold.endInteraction(interactionClock())
+                                                    gestureActive = false
+                                                }
+                                            }
+                                        } finally {
+                                            // The node can leave the composition
+                                            // between two gestures as well: the
+                                            // flag re-arms the settle window so
+                                            // the order cannot stay frozen.
+                                            gestureActive = false
                                         }
                                     },
                             ) {

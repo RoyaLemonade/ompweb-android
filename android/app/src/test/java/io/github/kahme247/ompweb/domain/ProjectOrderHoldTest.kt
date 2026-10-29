@@ -85,4 +85,66 @@ class ProjectOrderHoldTest {
         hold.endInteraction(nowMillis = 10)
         assertEquals(withoutC, hold.order(withoutC, nowMillis = 1_600))
     }
+
+    @Test
+    fun `a backward clock jump does not stretch the settle window`() {
+        val hold = ProjectOrderHold(settleMillis = 1_500)
+        assertEquals(settled, hold.order(settled, nowMillis = 1_000))
+        hold.beginInteraction()
+        hold.endInteraction(nowMillis = 10_000)
+
+        // The wall clock jumps back 500 ms while the window is open: the
+        // elapsed time is clamped, so the window is not 2 s long.
+        assertEquals(1_500L, hold.settleDelayMillis(nowMillis = 9_500))
+        assertEquals(settled, hold.order(reordered, nowMillis = 9_500))
+        assertEquals(settled, hold.order(reordered, nowMillis = 11_499))
+        assertEquals(reordered, hold.order(reordered, nowMillis = 11_500))
+    }
+
+    @Test
+    fun `an open search panel with an empty query does not hold the order`() {
+        // `searchOpen` is panel visibility, not an interaction; the unfiltered
+        // list keeps reordering while the field is merely on screen.
+        assertFalse(
+            holdsProjectOrder(
+                scrollInProgress = false,
+                menuOpen = false,
+                searchFocused = false,
+                searchQuery = "",
+            ),
+        )
+        assertTrue(
+            holdsProjectOrder(
+                scrollInProgress = false,
+                menuOpen = false,
+                searchFocused = true,
+                searchQuery = "",
+            ),
+        )
+        assertTrue(
+            "a typed query filters the list, so its rows must not jump",
+            holdsProjectOrder(
+                scrollInProgress = false,
+                menuOpen = false,
+                searchFocused = false,
+                searchQuery = "needle",
+            ),
+        )
+        assertTrue(
+            holdsProjectOrder(
+                scrollInProgress = true,
+                menuOpen = false,
+                searchFocused = false,
+                searchQuery = "",
+            ),
+        )
+        assertTrue(
+            holdsProjectOrder(
+                scrollInProgress = false,
+                menuOpen = true,
+                searchFocused = false,
+                searchQuery = "",
+            ),
+        )
+    }
 }

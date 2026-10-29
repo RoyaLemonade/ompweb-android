@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -184,6 +185,17 @@ internal fun ProjectBlock(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // The pin only lived in the menu, so neither a screen reader nor a
+            // user who never opens it could tell why a project sits at the top.
+            if (pinned) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_pin),
+                    contentDescription = stringResource(R.string.project_pinned),
+                    tint = colors.accent,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
             ProjectActivityBadges(activity, allProjectSessions.size)
             Box {
                 IconButton(onClick = { projectMenuOpen = true }) {

@@ -93,6 +93,7 @@
     <string name="project_launch_config">Launch configuration</string>
     <string name="project_pin">Pin project</string>
     <string name="project_unpin">Unpin project</string>
+    <string name="project_pinned">Pinned project</string>
     <string name="project_hide">Hide project</string>
     <string name="project_hide_title">Hide project?</string>
     <string name="project_hide_body">The project disappears from this app. Its sessions stay on the PC.</string>

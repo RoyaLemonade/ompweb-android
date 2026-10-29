@@ -182,18 +182,43 @@ class ProjectOrderHold(private val settleMillis: Long = PROJECT_ORDER_SETTLE_MIL
     /** Milliseconds until a pending settle window lifts, or null when none is pending. */
     fun settleDelayMillis(nowMillis: Long): Long? {
         if (interactionDepth > 0) return null
-        val ended = interactionEndMillis ?: return null
-        return (settleMillis - (nowMillis - ended)).coerceAtLeast(0L)
+        if (interactionEndMillis == null) return null
+        return (settleMillis - elapsedSinceEnd(nowMillis)).coerceAtLeast(0L)
     }
 
     private fun isFrozen(nowMillis: Long): Boolean {
         if (interactionDepth > 0) return true
-        val ended = interactionEndMillis ?: return false
-        if (nowMillis - ended < settleMillis) return true
+        if (interactionEndMillis == null) return false
+        if (elapsedSinceEnd(nowMillis) < settleMillis) return true
         interactionEndMillis = null
         return false
     }
+
+    /**
+     * Time since the last interaction ended, never negative. A wall clock that
+     * jumps back must not stretch the settle window by the jump — the gate
+     * would hold the order that much longer, which is exactly the "stuck gate"
+     * the hold exists to avoid. The callers already pass a monotonic clock
+     * where one is available.
+     */
+    private fun elapsedSinceEnd(nowMillis: Long): Long {
+        val ended = interactionEndMillis ?: return 0L
+        return (nowMillis - ended).coerceAtLeast(0L)
+    }
 }
+
+/**
+ * Whether the rendered list must hold its order right now: a finger on the
+ * list or a scroll, an open row menu, or an active search. An open search
+ * *panel* with an empty query is not enough — the whole unfiltered list would
+ * freeze for as long as the panel stays visible.
+ */
+fun holdsProjectOrder(
+    scrollInProgress: Boolean,
+    menuOpen: Boolean,
+    searchFocused: Boolean,
+    searchQuery: String,
+): Boolean = scrollInProgress || menuOpen || searchFocused || searchQuery.isNotBlank()
 
 /** Running/unread/exited session counts for one project row. */
 data class ProjectActivity(

@@ -11,15 +11,15 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
 /**
  * Project pins are per server origin and must survive a storage round-trip
- * (DataStore encode/decode), while `clearLocalUserData` — sign-out, a server
- * switch, a 401 — forgets them without touching the session pins.
+ * (DataStore encode/decode). `clearLocalUserData` — sign-out, a server switch,
+ * a 401 — forgets only the origin being left, without touching the session
+ * pins or another installation's project pins.
  */
 @RunWith(RobolectricTestRunner::class)
 class SettingsStorePinnedProjectsTest {
@@ -67,11 +67,22 @@ class SettingsStorePinnedProjectsTest {
         }
         assertEquals(listOf("/work/new", "/work/old"), emptied.pinnedProjectsByOrigin[origin])
 
-        store.clearPinnedProjects()
-        val cleared = withTimeout(5_000) {
-            store.snapshot.first { it.loaded && it.pinnedProjectsByOrigin.isEmpty() }
+        store.setPinnedProjects(other, listOf("/work/foreign"))
+        withTimeout(5_000) {
+            store.snapshot.first { it.loaded && it.pinnedProjectsByOrigin.containsKey(other) }
         }
-        assertTrue(cleared.pinnedProjectsByOrigin.isEmpty())
+
+        // Sign-out, a server switch and a 401 forget only the origin being
+        // left: paths of another installation are that installation's.
+        store.clearPinnedProjects(origin)
+        val cleared = withTimeout(5_000) {
+            store.snapshot.first { it.loaded && !it.pinnedProjectsByOrigin.containsKey(origin) }
+        }
+        assertEquals(
+            "another installation's pins survive",
+            mapOf(other to listOf("/work/foreign")),
+            cleared.pinnedProjectsByOrigin,
+        )
         assertEquals(
             "clearing project pins leaves the session pins alone",
             setOf("session-1"),

@@ -419,12 +419,22 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
     }
 
     /**
-     * Sign-out, a server switch and a 401 forget every origin's project pins
-     * (paths of the installation being left are meaningless on the next one).
+     * Forgets the project pins of [origin] — the installation being left.
+     * Pins live per server origin, so a switch, a sign-out or a 401 drops only
+     * the leaving list; another server's pins are its own (session pins have
+     * always behaved that way).
      */
-    suspend fun clearPinnedProjects() {
-        synchronized(this) { _snapshot.value = _snapshot.value.copy(pinnedProjectsByOrigin = emptyMap()) }
-        dataStore.edit { preferences -> preferences.remove(PINNED_PROJECTS) }
+    suspend fun clearPinnedProjects(origin: String) {
+        val key = origin.trim()
+        val next = _snapshot.value.pinnedProjectsByOrigin.toMutableMap().apply { remove(key) }
+        synchronized(this) { _snapshot.value = _snapshot.value.copy(pinnedProjectsByOrigin = next) }
+        dataStore.edit { preferences ->
+            if (next.isEmpty()) {
+                preferences.remove(PINNED_PROJECTS)
+            } else {
+                preferences[PINNED_PROJECTS] = encodePinnedProjects(next)
+            }
+        }
     }
 
     override suspend fun setToolPreset(preset: ToolPreset) {
