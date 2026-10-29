@@ -32,7 +32,11 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      # The action's default package list asks sdkmanager for "tools", which the
+      # SDK repository no longer serves; only install what this job needs.
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          packages: platform-tools
 
       - name: Install SDK packages
         run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
