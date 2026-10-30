@@ -69,6 +69,43 @@ not build yourself.
 The app remembers the address and the theme. **Sign out** forgets the cookie
 and returns to the password screen; **Change server** forgets the address too.
 
+## Writing in the chat
+
+- **Snippets (templates)** — save recurring wording under **Settings →
+  Interface & Behavior → Templates** and accept the first one from the `+` menu
+  or type its `/name` in the composer. A leading `/name` is replaced by the
+  snippet's text; anything you typed after the name is kept below it, and an
+  insertion in the middle of typed text gets its own lines instead of being
+  glued to it. Snippets are per device, not per server, and signing out does
+  not delete them.
+- **Quote and share** — long-press a message's actions to insert a `> quoted`
+  block at the caret, ready for the answer, or to share the message text
+  through any app on the phone.
+- **Images** open in a lightbox: pinch to zoom (up to 8×), double-tap to zoom
+  in and out, **1:1** shows the real pixels, **Fit** the whole picture, and a
+  swipe down closes it while it is not zoomed.
+- **Material You** — **Settings → Interface & Behavior → Use system colors
+  (Material You)** takes the palette from the Android wallpaper (Android 12 and
+  newer). Text and status colours keep a readable contrast ratio against their
+  background. Without the switch, the app's own themes are used.
+
+## Messages without a connection
+
+A send that never left the phone (no route, unknown host, refused connection)
+is kept as a pending bubble in the chat instead of being lost or returned to
+the field. As soon as the connection is back, or when you open the chat again,
+the queue is delivered in the order you wrote it: an idle session gets a
+normal prompt, a running one is steered or queued per the composer's
+send-during-a-run choice. Each queued message is marked before it is sent, so a
+message that may already have reached the server is never sent twice — the app
+says so once instead.
+
+A message disappears from the queue when the server answered it, and the
+answer moves a refused message back into the input field with the server's
+reason, so nothing blocks the messages behind it. The queue belongs to one
+server: signing out, switching servers and a 401 wipe it. A queued message the
+app could not deliver for a month is dropped with its images.
+
 ## Notifications
 
 ompweb keeps one connection to the server while the app is open, so it can
