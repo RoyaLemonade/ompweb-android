@@ -17,9 +17,12 @@ import io.github.kahme247.ompweb.testutil.MemoryDictationStore
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -63,13 +66,15 @@ class DictationViewModelTest {
         registry: ServerSttRegistry = ServerSttRegistry(),
         recorder: VoiceRecorder = FakeVoiceRecorder(),
         store: MemoryDictationStore = MemoryDictationStore(),
+        // The timers of one test can run on a virtual clock instead of wall-clock time.
+        vmScope: CoroutineScope = scope,
     ): DictationViewModel {
         text = "Reply with"
         caret = text.length
         return DictationViewModel(
             api = api,
             store = store,
-            scope = scope,
+            scope = vmScope,
             strings = strings,
             clock = { now },
             settings = MutableStateFlow(settings),
@@ -105,15 +110,6 @@ class DictationViewModelTest {
             Thread.sleep(5)
         }
         throw AssertionError("timed out waiting for $what")
-    }
-
-    private fun awaitFor(what: String, millis: Long, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + millis
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(10)
-        }
-        if (!condition()) throw AssertionError("timed out waiting for $what")
     }
 
     @Test
@@ -229,8 +225,11 @@ class DictationViewModelTest {
     }
 
     @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun `the stop fallback keeps every utterance when the recognizer never answers`() {
-        val vm = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"))
+        val scheduler = TestCoroutineScheduler()
+        val virtual = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
+        val vm = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"), vmScope = virtual)
         vm.start(SttAfter.Insert)
         val listener = speech.listener!!
 
@@ -239,8 +238,17 @@ class DictationViewModelTest {
         listener.onPartial("wie geht es dir")
 
         vm.stop()
-        awaitFor("the fallback commit", 4_000) { text == "Reply with hallo wie geht es dir" }
+        assertEquals(
+            "the text stays visible while the answer is pending",
+            "Reply with hallo wie geht es dir",
+            text,
+        )
+        scheduler.advanceTimeBy(FALLBACK_TIMEOUT_MS + 100)
+        scheduler.runCurrent()
+        virtual.cancel()
+
         assertEquals("both utterances survive the missing answer", "Reply with hallo wie geht es dir", text)
+        assertTrue("the take ends on the fallback", vm.state.value is DictationState.Idle)
     }
 
     @Test
@@ -522,5 +530,14 @@ class DictationViewModelTest {
             starts++
             return SttStartOutcome.Rejected("unexpected upload")
         }
+    }
+
+    private companion object {
+        /**
+         * How long a stopped on-device recognition may take to answer
+         * (`DictationViewModel.LIVE_RESULT_TIMEOUT_MS`, private): the fallback
+         * test runs it on a virtual clock.
+         */
+        const val FALLBACK_TIMEOUT_MS = 2_500L
     }
 }
