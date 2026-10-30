@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -112,7 +111,10 @@ class NewSessionViewModel(
         // remove there must reach this select without a cwd change (the web's
         // single `WorktreeContext` re-renders both).
         viewModelScope.launch {
-            worktreeCache.revision.drop(1).collect { reloadWorktrees() }
+            // The pane adopts the cache's current revision too: a list stored
+            // between `prepare` and this collector's subscription would be
+            // missed by `drop(1)` and the select would stay stale.
+            worktreeCache.revision.collect { reloadWorktrees() }
         }
     }
 

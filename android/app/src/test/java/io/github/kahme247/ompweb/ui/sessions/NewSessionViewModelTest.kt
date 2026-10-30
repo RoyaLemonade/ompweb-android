@@ -72,6 +72,8 @@ class NewSessionViewModelTest {
     /** Overrides the `/api/cwd/validate` answer for the invalid-workspace cases. */
     @Volatile private var cwdValidation: MockResponse? = null
     @Volatile private var cwdValidationCalls = 0
+    /** How often the pane fetched `/api/worktrees` itself. */
+    @Volatile private var worktreeListCalls = 0
 
     @Before
     fun setUp() {
@@ -87,7 +89,10 @@ class NewSessionViewModelTest {
                             """{"models":{},"modelList":[{"id":"m1","provider":"p","thinkingLevels":["off"]}]}""",
                         )
                     }
-                    path.startsWith("/api/worktrees") -> json("""{"worktrees":[]}""")
+                    path.startsWith("/api/worktrees") -> {
+                        worktreeListCalls++
+                        json("""{"worktrees":[]}""")
+                    }
                     // `prepare` validates the workspace before Send is allowed
                     // (A9); every prepared cwd in this class is acceptable
                     // unless a test overrides the answer.
@@ -176,7 +181,10 @@ class NewSessionViewModelTest {
     fun `a worktree created in the files panel reaches the open pane`() {
         viewModel.prepare("/home/test/project")
         waitFor("pane prepared") { viewModel.state.value.cwd == "/home/test/project" }
-        waitFor("initial worktree list") { !viewModel.state.value.worktreesLoading }
+        // The pane's own fetch must already be on the wire: the panel's store
+        // below is then the newer answer, and the stale fetch (an empty list)
+        // must not undo it.
+        waitFor("the pane's worktree fetch started") { worktreeListCalls > 0 }
 
         // The Files panel's Worktrees tab shares this cache; its create/remove
         // stores the fresh list there (Bug 19: no cwd change follows, so the
@@ -194,7 +202,9 @@ class NewSessionViewModelTest {
             ),
         )
 
-        waitFor("the select follows the shared cache") { viewModel.state.value.worktrees.size == 2 }
+        waitFor("the select follows the shared cache") {
+            viewModel.state.value.worktrees.size == 2 && !viewModel.state.value.worktreesLoading
+        }
         assertEquals("/home/test/project", viewModel.state.value.currentWorktreePath)
         assertFalse(viewModel.state.value.worktreesLoading)
     }

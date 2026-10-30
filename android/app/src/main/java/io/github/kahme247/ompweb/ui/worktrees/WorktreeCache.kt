@@ -45,8 +45,16 @@ class WorktreeCache(private val api: WorktreesApi) {
      */
     suspend fun list(cwd: String, force: Boolean = false): WorktreeList {
         if (!force) cached(cwd)?.let { return it }
+        val revision = _revision.value
         val list = api.list(cwd)
-        put(cwd, list)
+        synchronized(lock) {
+            // Another surface (the Files panel's create/remove) stored an
+            // answer while this request was in flight. That answer is newer,
+            // so the stale one must not overwrite it — otherwise a list the
+            // user just created disappears again.
+            if (_revision.value != revision) return cached(cwd) ?: list
+            put(cwd, list)
+        }
         return list
     }
 
@@ -59,8 +67,8 @@ class WorktreeCache(private val api: WorktreesApi) {
             for (entry in list.worktrees) {
                 projectByCwd[comparableProjectPath(entry.path)] = projectKey
             }
+            _revision.value += 1
         }
-        _revision.update { it + 1 }
     }
 
     /** Drops every entry; call after a create/remove or a workspace switch. */

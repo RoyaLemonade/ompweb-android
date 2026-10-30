@@ -1021,6 +1021,9 @@ class SessionsViewModelTest {
         )
         recreate(preferences)
         viewModel.setActive(true)
+        // The list load seeds the pins at its cold start as well: let it
+        // finish before tapping, so no late seed can race the assertion.
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
         waitFor("this origin's project pins seeded") {
             viewModel.state.value.pinnedProjectPaths == listOf("/work/existing")
         }
@@ -1068,6 +1071,7 @@ class SessionsViewModelTest {
         projectResponses.add(json("""{"projects":[{"path":"/work/a"}]}"""))
         recreate(preferences)
         viewModel.setActive(true)
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
         waitFor("project pin seeded") {
             viewModel.state.value.pinnedProjectPaths == listOf("/work/a")
         }

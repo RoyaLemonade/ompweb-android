@@ -282,6 +282,13 @@ class SessionsViewModel(
     private val recentlyCreated = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private var seededFromSettings = false
+
+    /**
+     * Origin whose pins were seeded from storage. Both the settings snapshot
+     * and the list's cold start can seed; the second one must not run later
+     * and overwrite a pin the user just tapped (CI flake, 1.0.21).
+     */
+    @Volatile private var pinsSeededFor: String? = null
     private var noticeCounter = 0L
 
     /**
@@ -327,18 +334,9 @@ class SessionsViewModel(
                     it.copy(
                         expandedProjects = it.expandedProjects ?: snapshot.expandedProjects,
                         unreadIds = if (it.unreadIds.isEmpty()) snapshot.unreadSessionIds else it.unreadIds,
-                        pinnedIds = if (it.pinnedIds.isEmpty()) {
-                            snapshot.pinnedSessionsByOrigin[originNow()?.origin ?: snapshot.origin?.origin].orEmpty()
-                        } else {
-                            it.pinnedIds
-                        },
-                        pinnedProjectPaths = if (it.pinnedProjectPaths.isEmpty()) {
-                            snapshot.pinnedProjectsByOrigin[originNow()?.origin ?: snapshot.origin?.origin].orEmpty()
-                        } else {
-                            it.pinnedProjectPaths
-                        },
                     )
                 }
+                seedPins(originNow()?.origin ?: snapshot.origin?.origin)
                 maybeSeedProjectExpansion()
             }
         }
@@ -408,6 +406,22 @@ class SessionsViewModel(
 
     // --- List loading -------------------------------------------------------
 
+    /**
+     * Seeds the pins from storage once per origin. The settings snapshot and
+     * the list's cold start both seed; running the second one late used to
+     * overwrite a pin (or unpin) the user had made in between.
+     */
+    private fun seedPins(originKey: String?) {
+        if (originKey == null || pinsSeededFor == originKey) return
+        pinsSeededFor = originKey
+        _state.update {
+            it.copy(
+                pinnedIds = preferences.snapshot.value.pinnedSessionsByOrigin[originKey].orEmpty(),
+                pinnedProjectPaths = preferences.snapshot.value.pinnedProjectsByOrigin[originKey].orEmpty(),
+            )
+        }
+    }
+
     private suspend fun load() {
         val origin = originNow()
         if (origin == null) {
@@ -415,6 +429,7 @@ class SessionsViewModel(
             // workspace memory so a re-login does not reseed (and overwrite)
             // the stored expansion selection.
             loadedOrigin = null
+            pinsSeededFor = null
             liveListOrigin = null
             liveProjectsOrigin = null
             messageSearchJob?.cancel()
@@ -466,6 +481,7 @@ class SessionsViewModel(
                     error = null,
                 )
             }
+            pinsSeededFor = originKey
             _history.value = NavigationHistory()
             liveListOrigin = null
             liveProjectsOrigin = null
@@ -473,14 +489,9 @@ class SessionsViewModel(
         loadedOrigin = originKey
         if (previousOrigin == null) {
             // Cold start (or sign-out → re-login): the snapshot may already
-            // hold pins for this origin. A later emission cannot corrupt this
-            // value because it is the persisted, origin-keyed state.
-            _state.update {
-                it.copy(
-                    pinnedIds = preferences.snapshot.value.pinnedSessionsByOrigin[originKey].orEmpty(),
-                    pinnedProjectPaths = preferences.snapshot.value.pinnedProjectsByOrigin[originKey].orEmpty(),
-                )
-            }
+            // hold pins for this origin. Seeding runs once per origin, so a
+            // load that lands after a pin tap cannot undo it.
+            seedPins(originKey)
         }
         // Cache-first: the last known workspace is painted before the first
         // request leaves, so a cold start shows its list in a few milliseconds
