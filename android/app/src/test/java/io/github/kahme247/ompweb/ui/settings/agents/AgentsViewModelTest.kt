@@ -7,6 +7,7 @@ import io.github.kahme247.ompweb.net.AgentUnpackResult
 import io.github.kahme247.ompweb.net.AgentsApi
 import io.github.kahme247.ompweb.net.AgentsDocument
 import io.github.kahme247.ompweb.net.ApiError
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,15 +35,6 @@ class AgentsViewModelTest {
     @After
     fun tearDown() {
         scope.cancel()
-    }
-
-    private fun waitFor(what: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 10_000
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(10)
-        }
-        throw AssertionError("timed out waiting for $what")
     }
 
     private fun attach() {

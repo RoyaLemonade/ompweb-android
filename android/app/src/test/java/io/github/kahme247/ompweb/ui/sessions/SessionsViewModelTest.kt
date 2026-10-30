@@ -19,6 +19,7 @@ import io.github.kahme247.ompweb.net.EventPostResult
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
 import io.github.kahme247.ompweb.testutil.MemorySessionListCache
+import io.github.kahme247.ompweb.testutil.waitFor
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,7 +45,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Test
@@ -1472,15 +1472,6 @@ class SessionsViewModelTest {
             """{"type":"hello","connectionId":"c${transport.streamsOpened}"}""",
         )
         return stream
-    }
-
-    private fun waitFor(message: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 8_000
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(20)
-        }
-        fail("$message; state=${viewModel.state.value}")
     }
 
     /** The app-info handshake gates "In messages"; wait for its capability. */

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModelStore
 import io.github.kahme247.ompweb.net.ApiClient
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -170,13 +171,4 @@ class DirectoryPickerViewModelTest {
         .setResponseCode(200)
         .setHeader("Content-Type", "application/json")
         .setBody(body)
-
-    private fun waitFor(message: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 8_000
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(20)
-        }
-        throw AssertionError("$message; state=${viewModel.state.value}")
-    }
 }

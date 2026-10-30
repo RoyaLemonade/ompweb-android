@@ -22,6 +22,7 @@ import io.github.kahme247.ompweb.net.OmpSettingsDocument
 import io.github.kahme247.ompweb.net.ProviderAccount
 import io.github.kahme247.ompweb.net.ProviderAccounts
 import io.github.kahme247.ompweb.testutil.FakeChatSettings
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,15 +57,6 @@ class ProvidersModelsViewModelTest {
     @After
     fun tearDown() {
         scope.cancel()
-    }
-
-    private fun waitFor(what: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 10_000
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(10)
-        }
-        throw AssertionError("timed out waiting for $what")
     }
 
     private fun loaded() {

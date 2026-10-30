@@ -11,6 +11,7 @@ import io.github.kahme247.ompweb.net.ApiClient
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
 import io.github.kahme247.ompweb.net.systemApi
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -151,15 +152,6 @@ class SettingsViewModelTest {
         MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json").setBody(body)
 
     private fun empty(): MockResponse = MockResponse().setResponseCode(204)
-
-    private fun waitFor(message: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 10_000
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(10)
-        }
-        throw AssertionError("timed out waiting for $message")
-    }
 
     // ------------------------------------------------------------------ usage
 

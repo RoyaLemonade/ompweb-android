@@ -12,6 +12,7 @@ import io.github.kahme247.ompweb.domain.sha256Hex
 import io.github.kahme247.ompweb.net.AndroidUpdateDownload
 import io.github.kahme247.ompweb.net.AndroidUpdateDownloader
 import io.github.kahme247.ompweb.net.AndroidUpdateSource
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
@@ -344,7 +345,7 @@ class AndroidUpdateControllerTest {
 
             controller.install()
 
-            awaitInstall(controller) { installer.installed.isNotEmpty() && !file.exists() }
+            awaitInstall { installer.installed.isNotEmpty() && !file.exists() }
             assertEquals(1, downloader.calls)
             assertEquals(listOf(file), installer.installed)
             assertEquals(AndroidUpdateInstallState.Installing, controller.state.value.install)
@@ -367,7 +368,7 @@ class AndroidUpdateControllerTest {
             )
             controller.check()
             controller.install()
-            awaitInstall(controller) { controller.state.value.install == AndroidUpdateInstallState.Installing }
+            awaitInstall { controller.state.value.install == AndroidUpdateInstallState.Installing }
 
             installer.status.emit(AndroidInstallSessionStatus.ConfirmationNeeded(installer.sessionId))
 
@@ -391,7 +392,7 @@ class AndroidUpdateControllerTest {
             )
             controller.check()
             controller.install()
-            awaitInstall(controller) { installer.installed.isNotEmpty() }
+            awaitInstall { installer.installed.isNotEmpty() }
             installer.status.emit(AndroidInstallSessionStatus.ConfirmationNeeded(installer.sessionId))
 
             installer.status.emit(
@@ -405,7 +406,7 @@ class AndroidUpdateControllerTest {
             assertTrue(failed.message.contains("User rejected permissions"))
             // The retry button must actually start a second attempt.
             controller.install()
-            awaitInstall(controller) { installer.installed.size == 2 && downloader.calls == 2 }
+            awaitInstall { installer.installed.size == 2 && downloader.calls == 2 }
         }
 
     @Test
@@ -423,7 +424,7 @@ class AndroidUpdateControllerTest {
             )
             controller.check()
             controller.install()
-            awaitInstall(controller) { controller.state.value.install == AndroidUpdateInstallState.Installing }
+            awaitInstall { controller.state.value.install == AndroidUpdateInstallState.Installing }
 
             installer.status.emit(AndroidInstallSessionStatus.Installed(installer.sessionId))
 
@@ -445,7 +446,7 @@ class AndroidUpdateControllerTest {
             )
             controller.check()
             controller.install()
-            awaitInstall(controller) { controller.state.value.install == AndroidUpdateInstallState.Installing }
+            awaitInstall { controller.state.value.install == AndroidUpdateInstallState.Installing }
             assertEquals(listOf(installer.sessionId), installer.reportedSessions)
 
             // An earlier process left a session whose confirmation was never
@@ -507,7 +508,7 @@ class AndroidUpdateControllerTest {
             )
             controller.check()
             controller.install()
-            awaitInstall(controller) { controller.state.value.install == AndroidUpdateInstallState.Installing }
+            awaitInstall { controller.state.value.install == AndroidUpdateInstallState.Installing }
             installer.status.emit(AndroidInstallSessionStatus.ConfirmationNeeded(installer.sessionId))
 
             controller.confirmInstall()
@@ -543,7 +544,7 @@ class AndroidUpdateControllerTest {
 
         controller.install()
 
-        awaitInstall(controller) {
+        awaitInstall {
             controller.state.value.install is AndroidUpdateInstallState.Failed && !file.exists()
         }
         val state = controller.state.value.install as AndroidUpdateInstallState.Failed
@@ -572,7 +573,7 @@ class AndroidUpdateControllerTest {
 
         controller.install()
 
-        awaitInstall(controller) {
+        awaitInstall {
             controller.state.value.install is AndroidUpdateInstallState.Failed && !file.exists()
         }
         val state = controller.state.value.install as AndroidUpdateInstallState.Failed
@@ -629,7 +630,7 @@ class AndroidUpdateControllerTest {
             installer.canInstallPackages = true
             controller.resumeInstallAfterPermission()
 
-            awaitInstall(controller) { installer.installed.isNotEmpty() }
+            awaitInstall { installer.installed.isNotEmpty() }
             assertEquals(1, downloader.calls)
             assertEquals(listOf(file), installer.installed)
         }
@@ -678,19 +679,10 @@ class AndroidUpdateControllerTest {
 
     /**
      * The install coroutine finishes the SHA-256 on Dispatchers.IO, so the
-     * launch alone is not a barrier. Poll the observed outcome instead of
-     * sleeping a fixed time.
+     * launch alone is not a barrier; wait for the observed outcome.
      */
-    private fun awaitInstall(
-        controller: AndroidUpdateController,
-        condition: () -> Boolean,
-    ) {
-        val deadline = System.currentTimeMillis() + 5_000
-        while (!condition() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(5)
-        }
-        assertTrue("the install did not reach the expected state", condition())
-    }
+    private fun awaitInstall(condition: () -> Boolean) =
+        waitFor("the install outcome", condition = condition)
 
     private class FakePrefs(
         initial: AndroidUpdatePreferencesSnapshot = AndroidUpdatePreferencesSnapshot(),

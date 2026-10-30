@@ -16,6 +16,7 @@ import io.github.kahme247.ompweb.net.ProjectLaunchConfig
 import io.github.kahme247.ompweb.net.ProjectList
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.util.Collections
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
@@ -45,7 +46,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Test
@@ -463,15 +463,6 @@ class SessionActionsTest {
         synchronized(recorded) {
             recorded.filter { it.method == method && it.path?.substringBefore('?') == path }
         }
-
-    private fun waitFor(message: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 8_000
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(20)
-        }
-        fail("$message; state=${viewModel.state.value}")
-    }
 
     private class FakePreferences : WorkspacePreferences {
         private val state = MutableStateFlow(SettingsSnapshot(loaded = true))

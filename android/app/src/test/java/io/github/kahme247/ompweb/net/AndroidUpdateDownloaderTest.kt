@@ -2,6 +2,7 @@ package io.github.kahme247.ompweb.net
 
 import io.github.kahme247.ompweb.domain.AndroidUpdateCandidate
 import io.github.kahme247.ompweb.domain.sha256Hex
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -152,11 +153,8 @@ class AndroidUpdateDownloaderTest {
         job.cancelAndJoin()
 
         val target = File(cacheDir, "ompweb-update.apk")
-        val deadline = System.currentTimeMillis() + 5_000
-        while (target.exists() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10)
-        }
-        assertFalse(target.exists())
+        // The aborted download deletes its partial file on Dispatchers.IO.
+        waitFor("the partial file to be deleted") { !target.exists() }
     }
 
     @Test

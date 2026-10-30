@@ -8,6 +8,7 @@ import io.github.kahme247.ompweb.net.NativeSettingsApi
 import io.github.kahme247.ompweb.net.NativeSettingsSnapshot
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,15 +39,6 @@ class NativeSettingsControllerTest {
     fun tearDown() {
         scope.cancel()
         if (serverStarted) server.shutdown()
-    }
-
-    private fun waitFor(message: String, timeoutMillis: Long = 10_000, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + timeoutMillis
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(10)
-        }
-        throw AssertionError("timed out waiting for $message")
     }
 
     private class FakeApi(

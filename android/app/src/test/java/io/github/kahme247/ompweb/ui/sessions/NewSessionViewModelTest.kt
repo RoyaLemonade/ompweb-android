@@ -20,6 +20,7 @@ import io.github.kahme247.ompweb.net.worktreesApi
 import io.github.kahme247.ompweb.testutil.FakeChatSettings
 import io.github.kahme247.ompweb.testutil.MemoryDictationStore
 import io.github.kahme247.ompweb.testutil.MemoryDrafts
+import io.github.kahme247.ompweb.testutil.waitFor
 import io.github.kahme247.ompweb.ui.composer.ComposerStrings
 import io.github.kahme247.ompweb.ui.composer.controls.ComposerControlsViewModel
 import io.github.kahme247.ompweb.ui.composer.dictation.DictationViewModel
@@ -42,7 +43,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 
@@ -421,15 +421,6 @@ class NewSessionViewModelTest {
         .setResponseCode(200)
         .setHeader("Content-Type", "application/json")
         .setBody(body)
-
-    private fun waitFor(message: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 8_000
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(20)
-        }
-        fail("$message; state=${viewModel.state.value} controls=${viewModel.controls.state.value}")
-    }
 
     private companion object {
         const val NO_SESSION = "No active session"
