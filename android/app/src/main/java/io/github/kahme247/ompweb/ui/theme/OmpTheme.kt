@@ -511,6 +511,8 @@ data class OmpDisplayPreferences(
     val fontSize: FontSizePreference = FontSizePreference.DEFAULT,
     val uiScale: UiScalePreference = UiScalePreference.DEFAULT,
     val touchTargets: TouchTargetsPreference = TouchTargetsPreference.DEFAULT,
+    /** Material You: the wallpaper palette replaces [themeId] on API 31+. */
+    val useSystemColors: Boolean = false,
 )
 
 val LocalOmpDisplayPreferences = staticCompositionLocalOf { OmpDisplayPreferences() }
@@ -530,25 +532,26 @@ fun OmpWebTheme(
     fontSize: FontSizePreference = FontSizePreference.DEFAULT,
     uiScale: UiScalePreference = UiScalePreference.DEFAULT,
     touchTargets: TouchTargetsPreference = TouchTargetsPreference.DEFAULT,
+    useSystemColors: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val theme = resolveOmpTheme(themeId)
-    val displayPreferences = remember(themeId, fontSize, uiScale, touchTargets) {
-        OmpDisplayPreferences(themeId, fontSize, uiScale, touchTargets)
+    val palette = resolveOmpPalette(themeId, useSystemColors)
+    val displayPreferences = remember(themeId, fontSize, uiScale, touchTargets, useSystemColors) {
+        OmpDisplayPreferences(themeId, fontSize, uiScale, touchTargets, useSystemColors)
     }
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = view.context.findActivity()?.window ?: return@SideEffect
             val controller = WindowCompat.getInsetsController(window, view)
-            controller.isAppearanceLightStatusBars = !theme.isDark
-            controller.isAppearanceLightNavigationBars = !theme.isDark
+            controller.isAppearanceLightStatusBars = !palette.isDark
+            controller.isAppearanceLightNavigationBars = !palette.isDark
         }
     }
     CompositionLocalProvider(LocalOmpDisplayPreferences provides displayPreferences) {
         OmpDisplayScaling(fontSize = fontSize, uiScale = uiScale, touchTargets = touchTargets) {
-            CompositionLocalProvider(LocalOmpColors provides theme.colors) {
-                MaterialTheme(colorScheme = theme.colors.toColorScheme(theme.isDark), content = content)
+            CompositionLocalProvider(LocalOmpColors provides palette.colors) {
+                MaterialTheme(colorScheme = palette.colors.toColorScheme(palette.isDark), content = content)
             }
         }
     }

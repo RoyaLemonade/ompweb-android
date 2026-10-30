@@ -158,6 +158,14 @@ val LOCAL_SETTINGS_SEARCH_ENTRIES: List<SettingsSearchEntry> = listOf(
         SettingsScope.UI,
     ),
     SettingsSearchEntry(
+        "material-you",
+        SettingsTab.GENERAL,
+        SECTION_INTERFACE,
+        "Use system colors (Material You)",
+        "Derive the app palette from the Android wallpaper colors on Android 12 and newer. Follows the system light or dark mode.",
+        SettingsScope.UI,
+    ),
+    SettingsSearchEntry(
         "message-during-active-run",
         SettingsTab.GENERAL,
         SECTION_INTERFACE,
@@ -357,6 +365,15 @@ val LOCAL_SETTINGS_SEARCH_ENTRIES: List<SettingsSearchEntry> = listOf(
         SECTION_NOTIFICATIONS,
         "When I'm using omp-web in another tab",
         "Nothing is shown for the session you are viewing.",
+        SettingsScope.UI,
+    ),
+    // Templates (General tab, below the composer preferences)
+    SettingsSearchEntry(
+        "chat-templates",
+        SettingsTab.GENERAL,
+        SECTION_INTERFACE,
+        "Templates",
+        "Reusable snippets for this phone: add, edit, reorder and delete them. They appear in the composer's + menu and answer their /name in the slash palette.",
         SettingsScope.UI,
     ),
 )

@@ -24,6 +24,8 @@ data class SlashCommandItem(
 )
 
 enum class SlashCommandSource(val wireName: String) {
+    /** A user-defined snippet from the templates store (per device). */
+    TEMPLATE("template"),
     BUILTIN("builtin"),
     EXTENSION("extension"),
     PROMPT("prompt"),
@@ -233,6 +235,7 @@ fun buildSlashInsertText(commandName: String, mode: SlashMode): String =
 
 /** The palette order: client built-ins first, then omp's groups, then name. */
 private val SLASH_SOURCE_ORDER = mapOf(
+    SlashCommandSource.TEMPLATE to -1,
     SlashCommandSource.BUILTIN to 0,
     SlashCommandSource.EXTENSION to 1,
     SlashCommandSource.PROMPT to 2,

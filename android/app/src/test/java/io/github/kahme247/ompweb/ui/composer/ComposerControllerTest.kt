@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.ui.composer
 
 import io.github.kahme247.ompweb.data.ChatDraft
+import io.github.kahme247.ompweb.data.ChatTemplate
 import io.github.kahme247.ompweb.domain.AttachedTextFile
 import io.github.kahme247.ompweb.net.ApiClient
 import io.github.kahme247.ompweb.net.filesApi
@@ -11,6 +12,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Composer state shared by the chat and the new-session pane. */
@@ -54,6 +56,66 @@ class ComposerControllerTest {
             "shared text",
             composer.state.value.edit?.text,
         )
+    }
+
+    @Test
+    fun `a snippet inserts its text and a second one starts on a new line`() = runTest(UnconfinedTestDispatcher()) {
+        val composer = controller(MemoryDrafts())
+        composer.bind("s1", null, null)
+        val template = ChatTemplate("1", "Review checklist", "Check the diff.")
+        composer.setTemplates(listOf(template))
+        assertEquals(1, composer.state.value.templates.size)
+
+        composer.insertTemplate(template)
+        assertEquals("Check the diff.", composer.state.value.text)
+        assertEquals("the caret sits after the snippet", "Check the diff.".length, composer.state.value.caret)
+
+        composer.insertTemplate(template)
+        assertEquals("Check the diff.\nCheck the diff.", composer.state.value.text)
+    }
+
+    @Test
+    fun `the slash palette lists a snippet and accepting it inserts the text`() = runTest(UnconfinedTestDispatcher()) {
+        val composer = controller(MemoryDrafts())
+        composer.bind("s1", null, null)
+        composer.setTemplates(listOf(ChatTemplate("1", "Review checklist", "Check the diff.")))
+
+        composer.onTextChanged("/rev", 4)
+        val menu = composer.state.value.slash
+        assertEquals("the snippet is first in the palette", "review-checklist", menu?.commands?.first()?.name)
+        assertTrue(composer.acceptSlash())
+        assertEquals("Check the diff.", composer.state.value.text)
+        assertEquals(null, composer.state.value.slash)
+    }
+
+    @Test
+    fun `a snippet inserted in typed text gets its own line`() = runTest(UnconfinedTestDispatcher()) {
+        val composer = controller(MemoryDrafts())
+        composer.bind("s1", null, null)
+        composer.setText("abcdef")
+        composer.onCaretMoved(3)
+
+        composer.insertTemplate(ChatTemplate("1", "Snippet", "SNIPPET"))
+
+        assertEquals("the typed text is not glued to the snippet", "abc\nSNIPPET\ndef", composer.state.value.text)
+        assertEquals(
+            "the caret stays at the end of the snippet",
+            "abc\nSNIPPET".length,
+            composer.state.value.caret,
+        )
+    }
+
+    @Test
+    fun `quoting inserts the block at the caret and leaves the caret below it`() = runTest(UnconfinedTestDispatcher()) {
+        val composer = controller(MemoryDrafts())
+        composer.bind("s1", null, null)
+        composer.setText("hello")
+        composer.onCaretMoved(5)
+
+        composer.insertQuote("quoted line\nsecond")
+
+        assertEquals("hello\n> quoted line\n> second\n\n", composer.state.value.text)
+        assertEquals(composer.state.value.text.length, composer.state.value.caret)
     }
 
     @Test

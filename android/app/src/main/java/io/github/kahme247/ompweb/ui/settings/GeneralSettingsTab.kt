@@ -15,6 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.data.SettingsSnapshot
+import io.github.kahme247.ompweb.data.TemplateStore
 import io.github.kahme247.ompweb.data.SettingsStore
 import io.github.kahme247.ompweb.domain.DictationEnginePreference
 import io.github.kahme247.ompweb.domain.FontSizePreference
@@ -25,6 +26,7 @@ import io.github.kahme247.ompweb.domain.dictationLanguageLabel
 import io.github.kahme247.ompweb.domain.offeredDictationLanguages
 import io.github.kahme247.ompweb.ui.chat.SpeechVoiceOption
 import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
+import io.github.kahme247.ompweb.ui.theme.materialYouSupported
 import kotlinx.coroutines.launch
 
 /**
@@ -35,6 +37,8 @@ import kotlinx.coroutines.launch
 fun GeneralSettingsTab(
     settings: SettingsStore,
     snapshot: SettingsSnapshot,
+    /** This device's snippets (Settings → General), shared with the composer. */
+    templates: TemplateStore,
     themeLabel: String,
     highlight: String?,
     voices: List<SpeechVoiceOption>,
@@ -119,6 +123,20 @@ fun GeneralSettingsTab(
                         )
                     },
                 )
+                if (materialYouSupported()) {
+                    SettingsRow(
+                        title = stringResource(R.string.settings_material_you),
+                        description = stringResource(R.string.settings_material_you_desc),
+                        scope = io.github.kahme247.ompweb.domain.SettingsScope.UI,
+                        highlighted = highlight == "material-you",
+                        trailing = {
+                            SettingsSwitch(
+                                snapshot.useSystemColors,
+                                { scope.launch { settings.setUseSystemColors(it) } },
+                            )
+                        },
+                    )
+                }
             }
         }
 
@@ -305,6 +323,13 @@ fun GeneralSettingsTab(
                     },
                 )
             }
+        }
+
+        item(key = "templates") {
+            TemplatesSettingsSection(
+                templates = templates,
+                highlighted = highlight == "chat-templates",
+            )
         }
 
         item(key = "general-native") {

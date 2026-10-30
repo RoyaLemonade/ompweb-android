@@ -18,8 +18,10 @@ import io.github.kahme247.ompweb.data.EncryptedCookieRecords
 import io.github.kahme247.ompweb.data.KeystoreCookieCipher
 import io.github.kahme247.ompweb.data.OriginBoundCookieJar
 import io.github.kahme247.ompweb.data.OriginScopedDraftStore
+import io.github.kahme247.ompweb.data.OutboxStore
 import io.github.kahme247.ompweb.data.SessionCacheStore
 import io.github.kahme247.ompweb.data.SettingsStore
+import io.github.kahme247.ompweb.data.TemplateStore
 import io.github.kahme247.ompweb.domain.ServerSttRegistry
 import io.github.kahme247.ompweb.events.EventMux
 import io.github.kahme247.ompweb.events.HttpEventTransport
@@ -274,6 +276,21 @@ class AppContainer(context: Context) {
      */
     val sessionCache = SessionCacheStore(File(appContext.filesDir, SESSION_CACHE_DIR))
 
+    /**
+     * Messages whose send never left the device (offline), one queue per server
+     * origin. Never delivered twice: a message claimed by a killed process is
+     * finalized instead of re-sent. [clearLocalUserData] wipes it with the rest
+     * of the installation.
+     */
+    val outbox = OutboxStore(File(appContext.filesDir, OUTBOX_DIR))
+
+    /**
+     * This device's snippets, shared by Settings (editing) and the chat
+     * composer (`+` menu, `/name` palette). Deliberately not per origin and not
+     * cleared on sign-out: the wording is the user's, not installation state.
+     */
+    val templates = TemplateStore(File(appContext.filesDir, TEMPLATES_DIR), appScope)
+
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     /**
@@ -517,6 +534,12 @@ class AppContainer(context: Context) {
         serverInfoRequested = false
         hostTools.reset()
         draftStore.clearAll()
+        // The queue directory may only go once nothing can write to it any
+        // more: the epoch bump cancels the chat surface, and with it a flush
+        // job that would otherwise recreate `queue.json` after the wipe and
+        // resurrect a message of the installation being left.
+        _sessionEpoch.update { it + 1 }
+        withContext(Dispatchers.IO) { outbox.clearAll() }
         // Project pins name paths of the installation being left. They are
         // stored per origin, so only that list is dropped: the next server has
         // its own registry and another origin's pins are none of our business
@@ -534,8 +557,6 @@ class AppContainer(context: Context) {
         dictationStore.purgeOrphans()
         SessionExport.purgeStaleExports(appContext)
         File(appContext.cacheDir, "camera").deleteRecursively()
-        // Settings view models hold the previous installation's models.yml.
-        _sessionEpoch.update { it + 1 }
     }
 
     /**
@@ -673,6 +694,8 @@ class AppContainer(context: Context) {
                 // Sign-out/switch/401 wipes the disk cache; the same bump drops
                 // the transcript this activity-scoped view model holds.
                 sessionEpoch = sessionEpoch,
+                outbox = outbox,
+                templates = templates,
             )
         }
     }
@@ -736,5 +759,11 @@ class AppContainer(context: Context) {
     private companion object {
         /** `filesDir` subdirectory of the cache-first payloads. */
         const val SESSION_CACHE_DIR = "session-cache"
+
+        /** Per-origin queues of messages that never reached the server. */
+        const val OUTBOX_DIR = "outbox"
+
+        /** Device-level composer snippets (kept across server switches). */
+        const val TEMPLATES_DIR = "templates"
     }
 }

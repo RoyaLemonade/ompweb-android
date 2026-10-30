@@ -115,6 +115,7 @@ fun OmpWebRoot(container: AppContainer) {
         fontSize = FontSizePreference.fromWire(settings.fontSize),
         uiScale = UiScalePreference.fromWire(settings.uiScale),
         touchTargets = TouchTargetsPreference.fromWire(settings.touchTargets),
+        useSystemColors = settings.useSystemColors,
     ) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             when (val current = route) {

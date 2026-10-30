@@ -1,7 +1,11 @@
 package io.github.kahme247.ompweb.ui.composer
 
+import io.github.kahme247.ompweb.chat.quoteInsertion
 import io.github.kahme247.ompweb.data.ChatDraft
+import io.github.kahme247.ompweb.data.ChatTemplate
 import io.github.kahme247.ompweb.data.ComposerDraftStore
+import io.github.kahme247.ompweb.data.TemplateCommand
+import io.github.kahme247.ompweb.data.templateCommands
 import io.github.kahme247.ompweb.domain.AttachedTextFile
 import io.github.kahme247.ompweb.domain.BashInvocation
 import io.github.kahme247.ompweb.domain.ComposerImage
@@ -73,6 +77,7 @@ class ComposerController(
     private var running = false
 
     private var remoteCommands: List<SlashCommandItem> = emptyList()
+    private var templates: List<ChatTemplate> = emptyList()
     private var dormantSkills: Set<String> = emptySet()
     private var fileIndex: FileIndexPage? = null
     private var indexCwd: String? = null
@@ -118,6 +123,7 @@ class ComposerController(
         _state.value = ComposerUiState(
             draft = stored,
             caret = stored.value.length,
+            templates = templates,
             edit = nextEdit(stored.value, stored.value.length),
         )
         if (keyChanged) {
@@ -134,6 +140,14 @@ class ComposerController(
     fun setRemoteCommands(commands: List<SlashCommandItem>) {
         if (commands == remoteCommands) return
         remoteCommands = commands
+        refreshMenus()
+    }
+
+    /** This device's snippets (settings and the chat share one store). */
+    fun setTemplates(list: List<ChatTemplate>) {
+        if (list == templates) return
+        templates = list
+        _state.value = _state.value.copy(templates = list)
         refreshMenus()
     }
 
@@ -176,6 +190,41 @@ class ComposerController(
         applyText(insertion.text, insertion.caret)
     }
 
+    /**
+     * Insert a `> quoted` block plus a blank line at the caret (the transcript
+     * rows' "Quote" action). The caret lands on the empty line below it.
+     */
+    fun insertQuote(quoted: String) {
+        val current = _state.value
+        val insertion = quoteInsertion(current.text, current.caret, quoted)
+        if (insertion.text == current.text) return
+        applyText(insertion.text, insertion.caret)
+    }
+
+    /**
+     * Insert a snippet's text at the caret (the `+` menu's templates). The
+     * snippet gets its own lines: text before the caret is separated by a
+     * newline, and typed text after it is pushed to the next line instead of
+     * being glued to the snippet's last word. The caret stays at the end of
+     * the snippet.
+     */
+    fun insertTemplate(template: ChatTemplate) {
+        val text = template.text.trim()
+        if (text.isEmpty()) return
+        val current = _state.value
+        val position = current.caret.coerceIn(0, current.text.length)
+        val before = current.text.substring(0, position)
+        val after = current.text.substring(position)
+        val lead = if (before.isEmpty() || before.endsWith("\n")) "" else "\n"
+        val tail = if (after.isEmpty() || after.startsWith("\n")) "" else "\n"
+        val insertion = lead + text + tail
+        applyText(before + insertion + after, position + lead.length + text.length)
+    }
+
+    /** The snippet a `/name` addresses, if any (used by the palette accept). */
+    fun templateFor(name: String): ChatTemplate? =
+        templateCommands(templates).firstOrNull { it.name == name }?.template
+
     /** Put text back only when the composer is empty (web `insertIfEmpty`). */
     fun insertIfEmpty(text: String) {
         if (_state.value.text.isNotBlank()) return
@@ -188,7 +237,7 @@ class ComposerController(
     fun replaceText(text: String, caret: Int) = applyText(text, caret)
 
     fun clear() {
-        _state.value = ComposerUiState(edit = nextEdit("", 0))
+        _state.value = ComposerUiState(templates = templates, edit = nextEdit("", 0))
         draftKey?.let(drafts::clearDraft)
         publishText()
     }
@@ -250,13 +299,14 @@ class ComposerController(
             return
         }
         if (sessionId != null && remoteCommands.isEmpty()) loadCommands(sessionId!!)
-        val pool = if (query.mode == io.github.kahme247.ompweb.domain.SlashMode.LEADING) {
-            (if (running) emptyList() else strings.builtinCommands) + remoteCommands
+        val leading = query.mode == io.github.kahme247.ompweb.domain.SlashMode.LEADING
+        val pool = if (leading) {
+            templatePalette() + (if (running) emptyList() else strings.builtinCommands) + remoteCommands
         } else {
             remoteCommands
         }
         val filtered = filterSlashCommands(pool, query.query, query.mode == io.github.kahme247.ompweb.domain.SlashMode.MID_PROMPT)
-        val ordered = if (query.mode == io.github.kahme247.ompweb.domain.SlashMode.LEADING) dormantSkillsLast(filtered) else filtered
+        val ordered = if (leading) dormantSkillsLast(filtered) else filtered
         val active = current.slash?.activeIndex?.coerceIn(0, (ordered.size - 1).coerceAtLeast(0)) ?: 0
         _state.value = current.copy(
             slash = SlashMenuUi(query, ordered, active),
@@ -264,6 +314,15 @@ class ComposerController(
             history = null,
         )
     }
+
+    private fun templatePalette(): List<SlashCommandItem> =
+        templateCommands(templates).map { command: TemplateCommand ->
+            SlashCommandItem(
+                name = command.name,
+                description = command.template.title,
+                source = SlashCommandSource.TEMPLATE,
+            )
+        }
 
     private fun dormantSkillsLast(commands: List<SlashCommandItem>): List<SlashCommandItem> {
         if (dormantSkills.isEmpty()) return commands
@@ -313,7 +372,13 @@ class ComposerController(
         val current = _state.value
         val start = menu.query.start.coerceIn(0, current.text.length)
         val caret = current.caret.coerceIn(0, current.text.length)
-        val insert = buildSlashInsertText(command.name, menu.query.mode)
+        // A snippet inserts its text in place of the `/name` token; a command
+        // inserts its own name and keeps the caret after it.
+        val template = templateFor(command.name)?.takeIf {
+            command.source == SlashCommandSource.TEMPLATE
+        }
+        val insert = template?.text?.trim()?.takeIf { it.isNotEmpty() }
+            ?: buildSlashInsertText(command.name, menu.query.mode)
         val next = current.text.substring(0, start) + insert + current.text.substring(caret)
         _state.value = current.copy(slash = null, at = null, history = null)
         applyText(next, start + insert.length)

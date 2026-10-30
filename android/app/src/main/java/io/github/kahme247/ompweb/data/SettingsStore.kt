@@ -117,6 +117,8 @@ data class SettingsSnapshot(
     val uiScale: String = "standard",
     /** `omp-touch-targets`: minimum interactive target (auto/compact/accessible). */
     val touchTargets: String = "auto",
+    /** `omp-material-you`: wallpaper palette on API 31+; default off. */
+    val useSystemColors: Boolean = false,
     /** `omp-web:dismissed-app-update`: the app version the banner was dismissed for. */
     val dismissedAppUpdateVersion: String? = null,
     /** `omp-web:dismissed-omp-update`: the omp version the banner was dismissed for. */
@@ -256,6 +258,7 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
                     fontSize = preferences[FONT_SIZE]?.takeIf { it.isNotBlank() } ?: "md",
                     uiScale = preferences[UI_SCALE]?.takeIf { it.isNotBlank() } ?: "standard",
                     touchTargets = preferences[TOUCH_TARGETS]?.takeIf { it.isNotBlank() } ?: "auto",
+                    useSystemColors = preferences[USE_SYSTEM_COLORS] ?: false,
                     dismissedAppUpdateVersion = preferences[DISMISSED_APP_UPDATE]?.takeIf { it.isNotBlank() },
                     dismissedOmpUpdateVersion = preferences[DISMISSED_OMP_UPDATE]?.takeIf { it.isNotBlank() },
                     completedAppUpdateVersion = preferences[COMPLETED_APP_UPDATE]?.takeIf { it.isNotBlank() },
@@ -605,6 +608,12 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
         dataStore.edit { preferences -> preferences[TOUCH_TARGETS] = preference.wire }
     }
 
+    /** Material You; the caller hides the toggle below API 31. */
+    suspend fun setUseSystemColors(enabled: Boolean) {
+        synchronized(this) { _snapshot.value = _snapshot.value.copy(useSystemColors = enabled) }
+        dataStore.edit { preferences -> preferences[USE_SYSTEM_COLORS] = enabled }
+    }
+
     override suspend fun setDismissedUpdate(kind: UpdateKind, version: String?) {
         val normalized = version?.takeIf { it.isNotBlank() }
         synchronized(this) {
@@ -741,6 +750,7 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
         val FONT_SIZE = stringPreferencesKey("omp-font-size")
         val UI_SCALE = stringPreferencesKey("omp-ui-scale")
         val TOUCH_TARGETS = stringPreferencesKey("omp-touch-targets")
+        val USE_SYSTEM_COLORS = booleanPreferencesKey("omp-material-you")
         val DISMISSED_APP_UPDATE = stringPreferencesKey("omp-web:dismissed-app-update")
         val DISMISSED_OMP_UPDATE = stringPreferencesKey("omp-web:dismissed-omp-update")
         val COMPLETED_APP_UPDATE = stringPreferencesKey("omp-web:completed-app-update")

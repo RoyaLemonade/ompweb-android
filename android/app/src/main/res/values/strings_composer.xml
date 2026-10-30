@@ -109,6 +109,9 @@
     <!-- Tools preset submenu (spawn-time only) -->
     <string name="composer_tools">Tools</string>
 
+    <!-- Snippet submenu (per device, managed in Settings) -->
+    <string name="composer_templates">Templates</string>
+
     <!-- Shell mode primary action -->
     <string name="composer_run_shell">Run</string>
 

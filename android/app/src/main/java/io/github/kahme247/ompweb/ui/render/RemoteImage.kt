@@ -9,8 +9,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -24,7 +27,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -72,7 +74,6 @@ import okio.FileSystem
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
-import kotlin.math.min
 
 /** Rendering environment supplied once by the app container. */
 object RenderEnvironment {
@@ -437,34 +438,19 @@ fun ImageLightbox(source: ImageSource, onDismiss: () -> Unit) {
         imageModel(context, source, thumbnail = false, inlineBytes = bytes)
     }
 
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    var zoom by remember { mutableStateOf(ImageZoom()) }
+    var swipeDrag by remember { mutableStateOf(Offset.Zero) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     var naturalSize by remember { mutableStateOf(IntSize.Zero) }
     var bytes by remember(source) { mutableStateOf<ByteArray?>(null) }
 
-    val fitScale = remember(naturalSize, boxSize) {
-        if (naturalSize.width <= 0 || naturalSize.height <= 0 || boxSize.width <= 0 || boxSize.height <= 0) {
-            1f
-        } else {
-            min(
-                1f,
-                min(
-                    boxSize.width.toFloat() / naturalSize.width,
-                    boxSize.height.toFloat() / naturalSize.height,
-                ),
-            )
-        }
-    }
-
     fun reset() {
-        scale = 1f
-        offset = Offset.Zero
+        zoom = ImageZoom()
     }
 
     fun actualSize() {
-        scale = (1f / fitScale.coerceAtLeast(0.01f)).coerceIn(0.1f, 8f)
-        offset = Offset.Zero
+        zoom = actualSizeZoom(fitScale(boxSize, naturalSize))
+            .clamped(boxSize, naturalSize)
     }
 
     val saveLauncher = rememberLauncherForActivityResult(
@@ -504,15 +490,67 @@ fun ImageLightbox(source: ImageSource, onDismiss: () -> Unit) {
                     .fillMaxSize()
                     .onSizeChanged { boxSize = it }
                     .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(0.1f, 8f)
-                            offset += pan
+                        val dismissThreshold = ImageZoom.SWIPE_DISMISS_DP.dp.toPx()
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            var drag = Offset.Zero
+                            var pending = Offset.Zero
+                            var pastSlop = false
+                            var zoomedDuringGesture = false
+                            do {
+                                val event = awaitPointerEvent()
+                                var pan = event.calculatePan()
+                                val zoomChange = event.calculateZoom()
+                                if (!pastSlop) {
+                                    // A tap must stay a tap: a finger's jitter
+                                    // only becomes a drag past the touch slop.
+                                    pending += pan
+                                    if (zoomChange != 1f || pending.getDistance() > viewConfiguration.touchSlop) {
+                                        pastSlop = true
+                                        pan = pending
+                                        pending = Offset.Zero
+                                    } else {
+                                        pan = Offset.Zero
+                                    }
+                                }
+                                if (pastSlop) {
+                                    val fit = fitScale(boxSize, naturalSize)
+                                    if (zoomChange != 1f) {
+                                        zoomedDuringGesture = true
+                                        zoom = zoom
+                                            .copy(scale = zoom.scale * zoomChange)
+                                            .clamped(boxSize, naturalSize, fit)
+                                    }
+                                    if (pan != Offset.Zero) {
+                                        if (zoom.isZoomed) {
+                                            zoom = zoom
+                                                .copy(offset = zoom.offset + pan)
+                                                .clamped(boxSize, naturalSize, fit)
+                                            drag = Offset.Zero
+                                            swipeDrag = Offset.Zero
+                                        } else {
+                                            drag += pan
+                                            // The sheet follows the finger so a
+                                            // short swipe that snaps back reads
+                                            // as a refusal, not as a dead gesture.
+                                            swipeDrag = if (drag.y > 0f) drag else Offset.Zero
+                                        }
+                                        event.changes.forEach { if (it.pressed) it.consume() }
+                                    }
+                                }
+                            } while (event.changes.any { it.pressed })
+                            val dismiss = !zoomedDuringGesture &&
+                                shouldDismissOnSwipe(zoom, drag, dismissThreshold)
+                            swipeDrag = Offset.Zero
+                            if (dismiss) onDismiss()
                         }
                     }
                     .pointerInput(Unit) {
                         detectTapGestures(
                             onDoubleTap = {
-                                if (scale > 1.01f) reset() else actualSize()
+                                val fit = fitScale(boxSize, naturalSize)
+                                zoom = doubleTapZoom(zoom, fit)
+                                    .clamped(boxSize, naturalSize, fit)
                             },
                         )
                     },
@@ -526,10 +564,10 @@ fun ImageLightbox(source: ImageSource, onDismiss: () -> Unit) {
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer(
-                                scaleX = scale,
-                                scaleY = scale,
-                                translationX = offset.x,
-                                translationY = offset.y,
+                                scaleX = zoom.scale,
+                                scaleY = zoom.scale,
+                                translationX = zoom.offset.x,
+                                translationY = zoom.offset.y + swipeDrag.y,
                             ),
                         contentScale = ContentScale.Fit,
                         onSuccess = { state ->

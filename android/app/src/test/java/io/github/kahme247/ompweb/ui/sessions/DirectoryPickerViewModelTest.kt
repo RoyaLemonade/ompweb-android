@@ -5,6 +5,7 @@ import io.github.kahme247.ompweb.net.ApiClient
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
 import io.github.kahme247.ompweb.testutil.waitFor
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -81,14 +82,16 @@ class DirectoryPickerViewModelTest {
 
         viewModel.cancelClone()
 
-        waitFor("clone cancelled") { viewModel.state.value.cloneStatus == "Clone cancelled" }
-        assertEquals(false, viewModel.state.value.cloneRunning)
+        waitFor("clone cancelled") { viewModel.state.value.cloneDropped() }
     }
 
     @Test
     fun `a 404 before the clone registered drops the stream instead of waiting`() {
-        // The server has not responded to the POST yet, so it cannot know the
-        // id: the 404 has to mean "cancel locally".
+        // The server has not responded to the POST while the picker cancels,
+        // so it cannot know the id: the 404 has to mean "cancel locally". The
+        // gate holds the POST answer until the test ends, so "not answered
+        // yet" is a fact of the test instead of a timing hope.
+        val postAnswered = CountDownLatch(1)
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 if (request.path?.startsWith("/api/cwd/browse") == true) {
@@ -98,28 +101,39 @@ class DirectoryPickerViewModelTest {
                     return if (request.method == "DELETE") {
                         MockResponse().setResponseCode(404).setBody("""{"error":"unknown clone"}""")
                     } else {
+                        postAnswered.await()
                         MockResponse().setResponseCode(200)
                             .setHeader("Content-Type", "application/x-ndjson")
                             .setBody(cloneBody())
                             .throttleBody(1024, 400, TimeUnit.MILLISECONDS)
-                            .setHeadersDelay(500, TimeUnit.MILLISECONDS)
                     }
                 }
                 return MockResponse().setResponseCode(404)
             }
         }
-        viewModel.start("/work")
-        waitFor("directory loaded") { viewModel.state.value.path == "/work" }
+        try {
+            viewModel.start("/work")
+            waitFor("directory loaded") { viewModel.state.value.path == "/work" }
 
-        viewModel.setCloneUrl("https://example.com/repo.git")
-        viewModel.select { _, _ -> }
-        waitFor("clone request sent") { viewModel.state.value.cloneRunning }
+            viewModel.setCloneUrl("https://example.com/repo.git")
+            viewModel.select { _, _ -> }
+            waitFor("clone request sent") { viewModel.state.value.cloneRunning }
 
-        viewModel.cancelClone()
+            viewModel.cancelClone()
 
-        waitFor("clone cancelled") { viewModel.state.value.cloneStatus == "Clone cancelled" }
-        assertEquals(false, viewModel.state.value.cloneRunning)
+            waitFor("clone cancelled") { viewModel.state.value.cloneDropped() }
+        } finally {
+            postAnswered.countDown()
+        }
     }
+
+    /**
+     * The state a cancelled clone must reach: the picker is no longer running
+     * and says so. Read as one snapshot, because the two fields belong to the
+     * same transition.
+     */
+    private fun DirectoryPickerUiState.cloneDropped(): Boolean =
+        cloneStatus == "Clone cancelled" && !cloneRunning
 
     private fun cloneBody(): String = (1..20).joinToString("\n") { index ->
         """{"type":"output","text":"cloning chunk $index ${"x".repeat(800)}"}"""

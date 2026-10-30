@@ -393,6 +393,13 @@ class AndroidUpdateControllerTest {
             controller.check()
             controller.install()
             awaitInstall { installer.installed.isNotEmpty() }
+            // On a device the session's answer arrives long after the attempt
+            // handed the APK over. Waiting for the job's cleanup (it deletes
+            // its APK) keeps the retry below from racing the first attempt:
+            // a retry that verified an APK the finished job deletes underneath
+            // it would refuse itself and never install again.
+            val firstApk = installer.installed.first()
+            awaitInstall { !firstApk.exists() }
             installer.status.emit(AndroidInstallSessionStatus.ConfirmationNeeded(installer.sessionId))
 
             installer.status.emit(

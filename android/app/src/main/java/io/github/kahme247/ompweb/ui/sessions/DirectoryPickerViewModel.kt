@@ -243,10 +243,18 @@ class DirectoryPickerViewModel(private val api: ApiClient) : ViewModel() {
         _state.update { it.copy(cloneStatus = "Cancelling…") }
         viewModelScope.launch {
             val dropStream = {
-                cancelledCloneId = id
-                _state.update { it.copy(cloneStatus = "Clone cancelled") }
-                cloneCall?.cancel()
-                cloneJob?.cancel()
+                // Only while this clone is still the one on screen: one that
+                // finished (or was replaced) meanwhile keeps its own result.
+                if (cloneId == id) {
+                    cancelledCloneId = id
+                    cloneCall?.cancel()
+                    cloneJob?.cancel()
+                    // One update: a cancelled clone is not running any more the
+                    // moment its status says so. Setting the text first left a
+                    // window in which the screen still blocked (a running
+                    // clone) although the clone had already been dropped.
+                    _state.update { it.copy(cloneRunning = false, cloneStatus = "Clone cancelled") }
+                }
             }
             val cancelled = captureApi { api.cancelClone(id) }
             if (cancelled.isFailure) {

@@ -5,7 +5,9 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
 import io.github.kahme247.ompweb.chat.ChatMessage
 import io.github.kahme247.ompweb.chat.NoticeKind
+import io.github.kahme247.ompweb.data.OutboxStore
 import io.github.kahme247.ompweb.data.SettingsSnapshot
+import io.github.kahme247.ompweb.data.TemplateStore
 import io.github.kahme247.ompweb.data.TranscriptCache
 import io.github.kahme247.ompweb.events.ConnectionState
 import io.github.kahme247.ompweb.events.EventChannel
@@ -84,7 +86,11 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Test
+import java.io.File
+import java.net.ConnectException
 
 /**
  * JVM tests for the chat view model's transport seams: prompt settlement,
@@ -116,6 +122,9 @@ class ChatViewModelTest {
     private val extensionApi = FakeExtensionApi()
     private lateinit var vm: ChatViewModel
 
+    @get:Rule
+    val temp = TemporaryFolder()
+
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
@@ -135,6 +144,8 @@ class ChatViewModelTest {
         transcripts: TranscriptCache? = null,
         sessionEpoch: StateFlow<Int>? = null,
         controlsApi: FakeComposerApi = FakeComposerApi(),
+        outbox: OutboxStore? = null,
+        templates: TemplateStore? = null,
     ) {
         val activeSettings = settingsOverride ?: if (submitDuringRun == SubmitDuringRunBehavior.DEFAULT) {
             settings
@@ -189,6 +200,8 @@ class ChatViewModelTest {
             transcripts = transcripts,
             cacheDispatcher = dispatcher,
             sessionEpoch = sessionEpoch,
+            outbox = outbox,
+            templates = templates,
         )
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             vm.events.collect { eventLog += it }
@@ -2342,9 +2355,292 @@ class ChatViewModelTest {
 
     // ----------------------------------------------------------------- fakes
 
+    // ---------------------------------------------------------------- outbox
+
+    private fun outboxStore() = OutboxStore(File(temp.root, "outbox"))
+
+    private fun offline() = ApiError.Network(ConnectException("no route to host"))
+
+    private fun TestScope.reconnect() {
+        events.state.value = ConnectionState.Offline
+        runCurrent()
+        events.state.value = ConnectionState.Connected
+        runCurrent()
+    }
+
+    @Test
+    fun aSendWithoutAConnectionIsKeptInTheOutboxInsteadOfTheDraft() = chatTest {
+        val outbox = outboxStore()
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+
+        vm.composer.setText("hello")
+        api.promptFailure = offline()
+        vm.submit()
+        runCurrent()
+
+        assertEquals("one attempt was made", listOf("s1" to "hello"), api.prompts)
+        assertFalse("the optimistic turn is rolled back", vm.ui.value.busy)
+        assertEquals("the text does not go back into the field", "", vm.composer.state.value.text)
+        assertEquals("the chat shows the waiting bubble", listOf("hello"), vm.ui.value.outbox.map { it.text })
+        val stored = outbox.read(origin.origin).entries
+        assertEquals(listOf("hello"), stored.map { it.text })
+    }
+
+    @Test
+    fun queuedImagesStayInAppStorageAndRideAlong() = chatTest {
+        val outbox = outboxStore()
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+
+        vm.composer.addImages(listOf(ComposerImage("QUJD", "image/png")))
+        vm.composer.setText("look")
+        api.promptFailure = offline()
+        vm.submit()
+        runCurrent()
+
+        val stored = outbox.read(origin.origin).entries.single()
+        assertEquals(1, stored.images.size)
+        assertEquals("QUJD", stored.images.single().data)
+        assertEquals(1, vm.ui.value.outbox.single().imageCount)
+    }
+
+    @Test
+    fun queuedMessagesAreDeliveredInOrderWhenTheConnectionReturns() = chatTest {
+        val outbox = outboxStore()
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+
+        api.promptFailure = offline()
+        vm.composer.setText("first")
+        vm.submit()
+        runCurrent()
+        vm.composer.setText("second")
+        vm.submit()
+        runCurrent()
+        assertEquals("both wait in the queue", 2, outbox.read(origin.origin).entries.size)
+        // The two failed attempts are recorded by the fake before they throw.
+        val attempts = api.prompts.size
+
+        api.promptFailure = null
+        reconnect()
+
+        assertEquals(
+            "the older message is the prompt",
+            listOf("s1" to "first"),
+            api.prompts.drop(attempts),
+        )
+        assertEquals(
+            "the next one follows the run preference (default: queue)",
+            listOf("s1" to "second"),
+            api.followUps,
+        )
+        assertTrue("the bubbles are gone", vm.ui.value.outbox.isEmpty())
+        assertTrue("the queue is drained", outbox.read(origin.origin).entries.isEmpty())
+        assertEquals("each message exactly once", 1, api.prompts.drop(attempts).size)
+        assertEquals(1, api.followUps.size)
+    }
+
+    @Test
+    fun aQueuedMessageClaimedByADeadProcessIsNeverSentTwice() = chatTest {
+        val outbox = outboxStore()
+        val entry = outbox.enqueue(origin.origin, "s1", null, "in flight", emptyList())!!
+        outbox.claim(origin.origin, entry.id)
+
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+
+        assertTrue("a claimed message is finalized, not re-sent", api.prompts.isEmpty())
+        assertTrue(outbox.read(origin.origin).entries.isEmpty())
+        assertTrue(vm.ui.value.outbox.isEmpty())
+        assertTrue(
+            "the user is told once",
+            eventLog.contains(ChatEvent.Toast(composerStrings.outboxStale)),
+        )
+    }
+
+    @Test
+    fun aQueuedMessageCanBeCancelledBeforeItIsSent() = chatTest {
+        val outbox = outboxStore()
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+
+        api.promptFailure = offline()
+        vm.composer.setText("do not send")
+        vm.submit()
+        runCurrent()
+        val id = vm.ui.value.outbox.single().id
+
+        vm.cancelOutbox(id)
+        runCurrent()
+        assertTrue(vm.ui.value.outbox.isEmpty())
+        assertTrue(outbox.read(origin.origin).entries.isEmpty())
+
+        api.promptFailure = null
+        reconnect()
+        assertEquals("only the failed attempt ever reached the API", 1, api.prompts.size)
+        assertTrue(api.followUps.isEmpty())
+    }
+
+    @Test
+    fun editingAQueuedMessageRestoresItsTextAndImages() = chatTest {
+        val outbox = outboxStore()
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+
+        vm.composer.addImages(listOf(ComposerImage("QUJD", "image/png")))
+        vm.composer.setText("queued text")
+        api.promptFailure = offline()
+        vm.submit()
+        runCurrent()
+        val id = outbox.read(origin.origin).entries.single().id
+
+        vm.editOutbox(id)
+        runCurrent()
+
+        assertEquals("queued text", vm.composer.state.value.text)
+        assertEquals(1, vm.composer.state.value.images.size)
+        assertTrue("the queue entry is gone", outbox.read(origin.origin).entries.isEmpty())
+        assertTrue(vm.ui.value.outbox.isEmpty())
+    }
+
+    @Test
+    fun aSubmitOnAColdOfflineStartLandsInTheOutbox() = chatTest {
+        val outbox = outboxStore()
+        // The cold start cannot read the live state: the device is offline.
+        api.agentStateFailure = offline()
+        api.promptFailure = offline()
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+        assertFalse(vm.ui.value.engine.liveStateKnown)
+
+        vm.composer.setText("offline hello")
+        vm.submit()
+        runCurrent()
+
+        assertEquals(
+            "the message is queued instead of waiting for a live state that cannot come",
+            listOf("offline hello"),
+            outbox.read(origin.origin).entries.map { it.text },
+        )
+        assertEquals("the field is clear", "", vm.composer.state.value.text)
+        assertEquals(listOf("offline hello"), vm.ui.value.outbox.map { it.text })
+        assertFalse("nothing runs", vm.ui.value.busy)
+    }
+
+    @Test
+    fun aQueuedMessageIsDeliveredWhenTheChatIsOpenedOnAHealthyConnection() = chatTest {
+        val outbox = outboxStore()
+        outbox.enqueue(origin.origin, "s1", null, "queued hello", emptyList())
+        // The open fires its own state read; the queue then races it. A read
+        // already on the wire must not be mistaken for "no connection".
+        val opened = CompletableDeferred<JsonObject>()
+        api.agentStateGate = opened
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+        assertTrue("nothing goes out while the state read is on the wire", api.prompts.isEmpty())
+
+        opened.complete(parse("""{"running":false,"state":{"isStreaming":false,"isPromptRunning":false}}"""))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        assertEquals(
+            "the queue is delivered once the state is known",
+            listOf("s1" to "queued hello"),
+            api.prompts,
+        )
+        assertTrue("the queue is drained", outbox.read(origin.origin).entries.isEmpty())
+        assertTrue("the waiting bubble is gone", vm.ui.value.outbox.isEmpty())
+    }
+
+    @Test
+    fun anAnsweredRefusalReturnsTheMessageToTheDraftAndUnblocksTheQueue() = chatTest {
+        val outbox = outboxStore()
+        outbox.enqueue(origin.origin, "s1", null, "refused text", emptyList())
+        outbox.enqueue(origin.origin, "s1", null, "next text", emptyList())
+        api.promptFailures += ApiError.Http(400, """{"error":"bad request"}""")
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertEquals(
+            "the refused message is not retried and the next one still goes out",
+            listOf("s1" to "refused text", "s1" to "next text"),
+            api.prompts,
+        )
+        assertTrue("the queue is drained", outbox.read(origin.origin).entries.isEmpty())
+        assertEquals("the refused text comes back into the field", "refused text", vm.composer.state.value.text)
+        assertTrue(
+            "the server's reason is shown",
+            vm.ui.value.notices.any { it.kind == NoticeKind.Error && it.message.contains("HTTP 400") },
+        )
+    }
+
+    @Test
+    fun aFailedFollowUpLeavesTheRunningTurnUntouched() = chatTest {
+        val outbox = outboxStore()
+        outbox.enqueue(origin.origin, "s1", null, "steer me", emptyList())
+        api.agentState = parse("""{"running":true,"state":{"isPromptRunning":true,"isStreaming":true}}""")
+        api.followUpFailure = ApiError.Http(500, """{"error":"boom"}""")
+        createViewModel(settingsOverride = originSettings(), outbox = outbox)
+        vm.open("s1", null)
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertTrue("a running session is never prompted", api.prompts.isEmpty())
+        assertEquals(listOf("s1" to "steer me"), api.followUps)
+        assertTrue("the run of the server keeps running", vm.ui.value.busy)
+        assertTrue("its agent state is not reset", vm.ui.value.engine.agentRunning)
+        assertTrue("the queue entry is settled", outbox.read(origin.origin).entries.isEmpty())
+        assertEquals("the text comes back for the user", "steer me", vm.composer.state.value.text)
+        assertTrue(
+            "the refusal is reported",
+            vm.ui.value.notices.any { it.kind == NoticeKind.Error && it.message.contains("HTTP 500") },
+        )
+    }
+
+    @Test
+    fun aTypedTemplateNameIsExpandedBeforeRouting() = chatTest {
+        val store = TemplateStore(
+            File(temp.root, "templates"),
+            this,
+            UnconfinedTestDispatcher(testScheduler),
+        )
+        store.add("Review checklist", "Check the diff.")
+        createViewModel(settingsOverride = originSettings(), templates = store)
+        vm.open("s1", null)
+        runCurrent()
+
+        vm.composer.setText("/review-checklist for the parser")
+        runCurrent()
+        vm.submit()
+        runCurrent()
+
+        assertEquals(
+            listOf("s1" to "Check the diff.\n\nfor the parser"),
+            api.prompts,
+        )
+    }
+
     private class FakeApi : ChatApi {
         var contextPage: JsonObject = page("s1", emptyList())
         var promptFailure: Exception? = null
+        /** Failures thrown by `prompt`, one per call, in order (before [promptFailure]). */
+        val promptFailures = mutableListOf<Exception>()
+        /** Failure for every `followUp` call. */
+        var followUpFailure: Exception? = null
         var abortFailure: Exception? = null
         var forkOutcome: ForkOutcome = ForkOutcome(cancelled = true)
         var forkFailure: Exception? = null
@@ -2397,6 +2693,7 @@ class ChatViewModelTest {
         ): JsonElement? {
             prompts += sessionId to message
             promptForces += force
+            if (promptFailures.isNotEmpty()) throw promptFailures.removeAt(0)
             promptFailure?.let { throw it }
             return null
         }
@@ -2502,6 +2799,7 @@ class ChatViewModelTest {
             images: List<ComposerImage>,
         ): JsonElement? {
             followUps += sessionId to message
+            followUpFailure?.let { throw it }
             return null
         }
 

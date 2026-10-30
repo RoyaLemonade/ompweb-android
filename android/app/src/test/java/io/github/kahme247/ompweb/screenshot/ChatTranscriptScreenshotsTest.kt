@@ -87,6 +87,8 @@ internal fun ChatTranscriptFixture() {
             onLoadBashOutput = {},
             onDownloadBashOutput = {},
             onEditFromHere = { _, _ -> },
+            onQuote = {},
+            onShare = {},
         )
     }
     val headers = remember(messages) { messageHeaders(messages) }
@@ -892,4 +894,6 @@ private fun screenshotCallbacks(): ChatRowCallbacks = ChatRowCallbacks(
     onLoadBashOutput = {},
     onDownloadBashOutput = {},
     onEditFromHere = { _, _ -> },
+    onQuote = {},
+    onShare = {},
 )

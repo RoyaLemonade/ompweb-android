@@ -18,12 +18,21 @@ import io.github.kahme247.ompweb.chat.ContextSync
 import io.github.kahme247.ompweb.chat.ForkTarget
 import io.github.kahme247.ompweb.chat.ForkTargets
 import io.github.kahme247.ompweb.chat.HistoryCursor
+import io.github.kahme247.ompweb.chat.OutboxBubbleUi
+import io.github.kahme247.ompweb.chat.OutboxDelivery
+import io.github.kahme247.ompweb.chat.isOutboxableSendFailure
+import io.github.kahme247.ompweb.chat.outboxDelivery
 import io.github.kahme247.ompweb.chat.TranscriptPlan
 import io.github.kahme247.ompweb.chat.TranscriptRow
 import io.github.kahme247.ompweb.chat.NoticeKind
 import io.github.kahme247.ompweb.data.ChatSettings
 import io.github.kahme247.ompweb.data.ComposerDraftStore
 import io.github.kahme247.ompweb.data.DraftRecovery
+import io.github.kahme247.ompweb.data.expandTemplateCommand
+import io.github.kahme247.ompweb.data.OutboxClaim
+import io.github.kahme247.ompweb.data.OutboxEntry
+import io.github.kahme247.ompweb.data.OutboxStore
+import io.github.kahme247.ompweb.data.TemplateStore
 import io.github.kahme247.ompweb.data.TranscriptCache
 import io.github.kahme247.ompweb.domain.ActiveGoal
 import io.github.kahme247.ompweb.domain.BashInvocation
@@ -45,6 +54,7 @@ import io.github.kahme247.ompweb.domain.SubagentInfo
 import io.github.kahme247.ompweb.domain.SubagentSource
 import io.github.kahme247.ompweb.domain.SubagentTranscriptMessage
 import io.github.kahme247.ompweb.domain.createActiveGoal
+import io.github.kahme247.ompweb.domain.getWebSlashCommand
 import io.github.kahme247.ompweb.domain.parseSubagentHistoryEntry
 import io.github.kahme247.ompweb.domain.parseSubagentSnapshot
 import io.github.kahme247.ompweb.domain.parseSubagentTranscriptPage
@@ -260,6 +270,13 @@ data class ChatUiState(
      * the copy; the copy carries the sent text.
      */
     val contentionCopy: ContentionCopy? = null,
+    /**
+     * Messages of this chat that are waiting for the connection (offline
+     * outbox). They are not transcript rows: the server has never seen them.
+     * Rendered after the transcript, each with "Waiting for connection" and
+     * edit/cancel actions.
+     */
+    val outbox: List<OutboxBubbleUi> = emptyList(),
 ) {
     val busy: Boolean
         get() = engine.busy || engine.streamingActive
@@ -334,6 +351,17 @@ class ChatViewModel(
      * the previous installation may survive in the heap.
      */
     private val sessionEpoch: StateFlow<Int>? = null,
+    /**
+     * Messages whose send never left the device (no connection), kept per
+     * origin until the chat is back online. `null` disables the outbox: a
+     * failed send falls back to the draft rollback.
+     */
+    private val outbox: OutboxStore? = null,
+    /**
+     * This device's snippets (per device, not per origin). The chat only
+     * mirrors them into the composer; Settings owns the editing.
+     */
+    private val templates: TemplateStore? = null,
 ) : ViewModel() {
 
     private val engine = ChatEngine(
@@ -532,7 +560,16 @@ class ChatViewModel(
                 if (connection == ConnectionState.Connected && previous != ConnectionState.Connected) {
                     requestHistory(reset = false)
                     reconcileNow()
+                    // The queued messages of this chat go out in order as soon
+                    // as the stream is back (idle → prompt, running → steer/
+                    // follow-up, exactly like a submit).
+                    flushOutbox()
                 }
+            }
+        }
+        templates?.let { store ->
+            viewModelScope.launch {
+                store.state.collect { list -> composer.setTemplates(list) }
             }
         }
         viewModelScope.launch {
@@ -568,7 +605,14 @@ class ChatViewModel(
                 )
                 if (!known) {
                     unknownBackoff = minOf(unknownBackoff * 2, RECONCILE_UNKNOWN_MAX_MILLIS)
-                    reconcileNow(countSlowAnswer = true)
+                    // Read here instead of launching: the answer is also what
+                    // the queue was waiting for. A flush that ran while this
+                    // read was on the wire saw `Skipped` and gave up; only a
+                    // settled state may start it again, which is exactly this.
+                    when (readLiveState(countSlowAnswer = true)) {
+                        LiveRead.Running, LiveRead.Idle, LiveRead.Slow -> flushOutbox()
+                        LiveRead.Skipped, is LiveRead.Failed -> Unit
+                    }
                 } else if (foreign) {
                     // Follow the file read-only AND re-read the owner report:
                     // without the state poll an owner that ended would keep the
@@ -808,7 +852,10 @@ class ChatViewModel(
     }
 
     /** Route a resolved submission: shell, web expansion, builtin or prompt. */
-    private fun submitResolved(submission: ComposerSubmission, forceQueue: Boolean) {
+    private fun submitResolved(rawSubmission: ComposerSubmission, forceQueue: Boolean) {
+        // A snippet typed as `/name` is its text before anything routes it; a
+        // real command of the same name keeps the name.
+        val submission = expandSubmittedTemplate(rawSubmission)
         // `/btw` runs beside any main turn (never queued, never a prompt) and
         // is checked before the streaming branch, like the web composer.
         if (isSideQuestion(submission.raw)) {
@@ -1009,8 +1056,23 @@ class ChatViewModel(
                     // Slow only leaves the wait loop as running (the engine was
                     // marked alive); routing here still sees the busy state.
                     LiveRead.Running, LiveRead.Idle, LiveRead.Slow -> submitResolved(submission, forceQueue)
-                    LiveRead.Skipped, is LiveRead.Failed ->
+                    LiveRead.Skipped ->
                         _events.tryEmit(ChatEvent.Toast(composerStrings.liveStateUnknown))
+                    is LiveRead.Failed -> {
+                        // The device is offline: the live state stays unknown,
+                        // but a plain prompt does not depend on it for the
+                        // user's intent. The send fails before leaving the
+                        // device and lands in the outbox, where delivery
+                        // resolves the live state later.
+                        val route = routeOf(submission)
+                        if (isOutboxableSendFailure(read.error) && outbox != null &&
+                            route is ComposerRoute.Prompt && !holdForForeignOwner(submission)
+                        ) {
+                            sendPrompt(submission, clearOnSuccess = true)
+                        } else {
+                            _events.tryEmit(ChatEvent.Toast(composerStrings.liveStateUnknown))
+                        }
+                    }
                 }
             } finally {
                 // A cancelled wait of the previous chat has already been
@@ -1067,7 +1129,16 @@ class ChatViewModel(
                     // A busy child: the engine is now marked running, so the
                     // next pass answers from its state; the backoff keeps a
                     // fenced (dropped) mark from spinning.
-                    LiveRead.Slow, is LiveRead.Failed -> {
+                    LiveRead.Slow -> {
+                        delay(backoff)
+                        backoff = minOf(backoff * 2, LIVE_STATE_SUBMIT_MAX_RETRY_MILLIS)
+                    }
+                    is LiveRead.Failed -> {
+                        // A refused connection says the server is unreachable,
+                        // not "answer pending": waiting out the bounded read
+                        // would only keep the draft locked. The caller queues
+                        // the message instead of guessing the run state.
+                        if (isOutboxableSendFailure(read.error)) return@withTimeoutOrNull read
                         delay(backoff)
                         backoff = minOf(backoff * 2, LIVE_STATE_SUBMIT_MAX_RETRY_MILLIS)
                     }
@@ -1423,6 +1494,8 @@ class ChatViewModel(
             // A surface recreated after [onChatHidden] (rotation, back to the
             // chat) re-arms the consent scopes it dropped on dispose.
             onChatVisible()
+            refreshOutbox()
+            flushOutbox()
             return
         }
         val previousId = this.sessionId
@@ -1489,6 +1562,9 @@ class ChatViewModel(
                 systemPrompt = SystemPromptState.Idle,
                 // A move belongs to the chat that was copied, not the next one.
                 contentionCopy = null,
+                // Queued bubbles belong to the chat being left; the refresh
+                // below paints the new chat's queue.
+                outbox = emptyList(),
             )
         }
         composer.bind(sessionId, cwd, sessionId)
@@ -1502,6 +1578,12 @@ class ChatViewModel(
         // `GET /api/agent/{id}` settles the live state, so the footer can stop
         // saying "Connecting…" and report the real run state.
         reconcileNow()
+        // Queued messages belong to this chat: finalize claims left by a dead
+        // process once, then show the queue and deliver what the connection
+        // allows (the loop settles the live state itself).
+        recoverOutbox()
+        refreshOutbox()
+        flushOutbox()
         loadMeta(sessionId)
         // The session file's task toolResults hold finished runs from earlier
         // visits (web `loadSession` → `refreshSubagentHistory`).
@@ -1557,6 +1639,8 @@ class ChatViewModel(
         // dropped: it must not route it, and it must not keep a "Sending…"
         // flag for the next sign-in either.
         abandonPendingSubmit()
+        outboxFlushJob?.cancel()
+        outboxFlushJob = null
         historyJob?.cancel()
         historyJob = null
         historyRequested = false
@@ -1708,6 +1792,14 @@ class ChatViewModel(
                         } else {
                             _ui.update { it.copy(foreignSend = submission) }
                         }
+                    } else if (isOutboxableSendFailure(error) && outbox != null) {
+                        // The device has no connection and the request never
+                        // left it: nothing reached the server. The message
+                        // moves into the per-origin outbox (not back into the
+                        // draft) and is delivered in order when the stream
+                        // reconnects.
+                        engine.sendFailed(null)
+                        enqueueOutbox(sid, message, images)
                     } else {
                         engine.sendFailed(error.userMessage())
                         // Hand the text back instead of losing it with the
@@ -1720,6 +1812,372 @@ class ChatViewModel(
             }
         }
         return true
+    }
+
+    // ----------------------------------------------------------------- outbox
+
+    /** Set while the delivery loop of the open chat runs; one loop at a time. */
+    private var outboxFlushJob: Job? = null
+
+    /** Origin whose startup recovery ([recoverOutbox]) already ran. */
+    private var outboxRecoveredFor: String? = null
+
+    private fun currentOrigin(): String? = settings.snapshot.value.origin?.origin
+
+    private suspend fun enqueueOutbox(sid: String, text: String, images: List<ComposerImage>) {
+        val store = outbox ?: return
+        val origin = currentOrigin() ?: return
+        val entry = withContext(cacheDispatcher) {
+            store.enqueue(origin, sid, cwd, text, images)
+        }
+        if (entry == null) {
+            // The store refused (disk full, unreadable file): fall back to
+            // handing the text back, it must never vanish.
+            recoverDraft(composer.currentDraftKey, text, images)
+            _events.tryEmit(ChatEvent.Toast(composerStrings.outboxFailed))
+            return
+        }
+        refreshOutbox()
+        _events.tryEmit(ChatEvent.Toast(composerStrings.outboxQueued))
+    }
+
+    /**
+     * Publish the queued messages of the open chat as pending bubbles. Records
+     * that are being delivered right now stay hidden; the startup cleanup of a
+     * dead process' claim is [recoverOutbox]'s job.
+     */
+    private fun refreshOutbox() {
+        val store = outbox ?: return
+        val sid = sessionId ?: return
+        val origin = currentOrigin() ?: return
+        viewModelScope.launch {
+            val load = withContext(cacheDispatcher) { store.read(origin) }
+            if (sessionId != sid) return@launch
+            val bubbles = load.entries
+                .filter { it.sessionId == sid }
+                .map { OutboxBubbleUi(id = it.id, text = it.text, imageCount = it.images.size) }
+            _ui.update { it.copy(outbox = bubbles) }
+        }
+    }
+
+    /**
+     * The startup pass of the queue: a message claimed by a process that died
+     * mid-send may already have reached the server and is finalized (never
+     * re-sent). Runs once per origin, when a chat is opened.
+     */
+    private fun recoverOutbox() {
+        val store = outbox ?: return
+        val origin = currentOrigin() ?: return
+        if (outboxRecoveredFor == origin) return
+        outboxRecoveredFor = origin
+        viewModelScope.launch {
+            val load = withContext(cacheDispatcher) { store.recover(origin) }
+            if (load.uncertain > 0) {
+                _events.tryEmit(ChatEvent.Toast(composerStrings.outboxStale))
+            }
+            refreshOutbox()
+        }
+    }
+
+    /**
+     * Deliver the open chat's queued messages, oldest first, until the queue is
+     * empty or a delivery cannot proceed (still offline, another owner, a
+     * refusal). Each message is claimed in the store before its request, so a
+     * process death can never send it twice; the routing follows a submit made
+     * right now (`outboxDelivery`).
+     */
+    private fun flushOutbox() {
+        val store = outbox ?: return
+        val sid = sessionId ?: return
+        val origin = currentOrigin() ?: return
+        if (outboxFlushJob?.isActive == true) return
+        outboxFlushJob = viewModelScope.launch {
+            try {
+                while (sessionId == sid) {
+                    val entry = withContext(cacheDispatcher) {
+                        store.read(origin).entries.firstOrNull { it.sessionId == sid }
+                    } ?: break
+                    // A submit made right now waits for the live state first;
+                    // a queued one must not guess either (a prompt on a running
+                    // session would be refused and the intent lost). The wait
+                    // retries a read that is already on the wire — the GET the
+                    // open itself started — instead of giving up on it.
+                    if (!engine.state.value.liveStateKnown && !awaitLiveStateForOutbox()) break
+                    if (!engine.state.value.liveStateKnown) break
+                    if (engine.state.value.foreignRun?.active == true) break
+                    when (withContext(cacheDispatcher) { store.claim(origin, entry.id) }) {
+                        OutboxClaim.GONE -> {
+                            // Cancelled/edited in the meantime: try the next one.
+                            refreshOutbox()
+                            continue
+                        }
+                        OutboxClaim.FAILED -> {
+                            // The "may be on its way" mark could not be written:
+                            // a POST now would lose the exactly-once guarantee.
+                            // The record stays queued and is tried again later.
+                            engine.notify(NoticeKind.Error, composerStrings.outboxClaimFailed)
+                            break
+                        }
+                        OutboxClaim.CLAIMED -> Unit
+                    }
+                    _ui.update { it.copy(outbox = it.outbox.filterNot { bubble -> bubble.id == entry.id }) }
+                    if (!deliverOutbox(origin, entry)) break
+                }
+            } finally {
+                outboxFlushJob = null
+                if (sessionId == sid) refreshOutbox()
+            }
+        }
+    }
+
+    /**
+     * The bounded wait [flushOutbox] performs for a session whose run state is
+     * still unknown. It polls a read that is already on the wire instead of
+     * treating `Skipped` as "no connection": the open's own GET, the reconnect
+     * listener's read and this one all answer the same state. `false` means the
+     * state could not be settled (offline, or no answer within the window); the
+     * queue then waits for the next trigger ([flushOutbox] runs on the
+     * connection listener and on a poll that finally got an answer).
+     */
+    private suspend fun awaitLiveStateForOutbox(): Boolean =
+        withTimeoutOrNull(OUTBOX_LIVE_STATE_TIMEOUT_MILLIS) {
+            var backoff = LIVE_STATE_SUBMIT_FIRST_MILLIS
+            while (true) {
+                if (engine.state.value.liveStateKnown) return@withTimeoutOrNull true
+                when (val read = readLiveState()) {
+                    LiveRead.Running, LiveRead.Idle, LiveRead.Slow -> return@withTimeoutOrNull true
+                    // A read of this session is already on the wire; its answer
+                    // settles the state, so waiting is the cheap option.
+                    LiveRead.Skipped -> delay(LIVE_STATE_SUBMIT_POLL_MILLIS)
+                    is LiveRead.Failed -> {
+                        if (isOutboxableSendFailure(read.error)) return@withTimeoutOrNull false
+                        delay(backoff)
+                        backoff = minOf(backoff * 2, LIVE_STATE_SUBMIT_MAX_RETRY_MILLIS)
+                    }
+                }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            false
+        } ?: false
+
+    /** One queued message, routed like a normal submit. `true` = next one. */
+    private suspend fun deliverOutbox(origin: String, entry: OutboxEntry): Boolean {
+        val busy = engine.state.value.busy || engine.state.value.streamingActive ||
+            engine.state.value.bashRunning
+        return when (outboxDelivery(busy, settings.snapshot.value.submitDuringRun)) {
+            OutboxDelivery.PROMPT -> deliverOutboxPrompt(origin, entry)
+            OutboxDelivery.STEER -> deliverOutboxQueue(origin, entry, steer = true)
+            OutboxDelivery.FOLLOW_UP -> deliverOutboxQueue(origin, entry, steer = false)
+        }
+    }
+
+    /**
+     * The queued message actually reached the server (or may have): drop it
+     * from the store. A `session_slow` with `maybeStarted` is a success in the
+     * exactly-once sense — the frame may run, so it must never be re-sent.
+     */
+    private suspend fun settleOutbox(origin: String, entry: OutboxEntry) {
+        withContext(cacheDispatcher) { outbox?.remove(origin, entry.id) }
+        refreshOutbox()
+    }
+
+    /** The request provably never left the device: keep the record queued. */
+    private suspend fun releaseOutbox(origin: String, entry: OutboxEntry) {
+        withContext(cacheDispatcher) { outbox?.release(origin, entry.id) }
+        refreshOutbox()
+    }
+
+    /**
+     * A failure of a queued delivery. Returns `true` when the loop may try the
+     * next message: only a message that was answered counts; anything that
+     * keeps the queue waiting stops the loop.
+     *
+     * [ownsRun] separates the two callers: [deliverOutboxPrompt] started an
+     * optimistic turn with `sendStarted`, so a failure must roll *that* turn
+     * back; [deliverOutboxQueue] steered or queued into a run this app never
+     * started and must never touch it — resetting it would make the running
+     * answer disappear and re-enable the composer until the next frame.
+     */
+    private suspend fun outboxDeliveryFailed(
+        origin: String,
+        entry: OutboxEntry,
+        error: Exception,
+        ownsRun: Boolean,
+    ): Boolean {
+        when {
+            error is ApiError.SessionSlow && error.maybeStarted -> {
+                // The frame may already run; retrying would send it twice.
+                engine.promptMaybeStarted(maybeStartedMessage)
+                settleOutbox(origin, entry)
+                return false
+            }
+            error is ApiError.SessionRunningElsewhere -> {
+                engine.setForeignRun(error.elsewhere ?: engine.state.value.foreignRun)
+                if (ownsRun) engine.sendFailed(null)
+                releaseOutbox(origin, entry)
+                return false
+            }
+            isOutboxableSendFailure(error) -> {
+                // The request never left the device: keep it queued, the next
+                // reconnect delivers it.
+                if (ownsRun) engine.sendFailed(null)
+                releaseOutbox(origin, entry)
+                return false
+            }
+            error is ApiError.Network -> {
+                // A timeout/EOF after the request was on the wire: it may have
+                // arrived, so it is dropped instead of being sent twice.
+                val message = composerStrings.outboxDeliveryUnknown
+                if (ownsRun) engine.sendFailed(message) else engine.notify(NoticeKind.Error, message)
+                settleOutbox(origin, entry)
+                return false
+            }
+            else -> {
+                // omp answered (4xx/5xx: validation, a deleted session, the
+                // origin gate, a misconfigured server): the message was
+                // refused, not lost in transit. Retrying it on every reconnect
+                // would repeat the refusal forever and block everything queued
+                // behind it, so it leaves the queue and goes back into the
+                // field it was typed in — with the server's reason.
+                if (ownsRun) engine.sendFailed(error.userMessage()) else engine.notify(NoticeKind.Error, error.userMessage())
+                settleOutbox(origin, entry)
+                recoverDraft(composer.currentDraftKey, entry.text, entry.images)
+                return true
+            }
+        }
+    }
+
+    /** Idle session: the queued message becomes a normal optimistic prompt. */
+    private suspend fun deliverOutboxPrompt(origin: String, entry: OutboxEntry): Boolean {
+        val sid = sessionId
+        val store = outbox
+        if (sid == null || store == null || sid != entry.sessionId) {
+            // The chat changed while the claim was being written: the record
+            // goes back into the queue untried.
+            releaseOutbox(origin, entry)
+            return false
+        }
+        val message = entry.text.trim()
+        if (message.isEmpty() && entry.images.isEmpty()) {
+            withContext(cacheDispatcher) { store.remove(origin, entry.id) }
+            return true
+        }
+        val runId = ++runCounter
+        engine.sendStarted(message, runId, command = message.startsWith("/") && entry.images.isEmpty())
+        ensureSubscribed(sid)
+        hostTools.register(sid)
+        refreshSubagentRoster(sid)
+        try {
+            val result = api.prompt(sid, message, entry.images)
+            if (engine.state.value.runId == runId) {
+                val root = result as? JsonObject
+                val queued = root?.get("queued")?.jsonPrimitive?.booleanOrNull == true
+                if (queued) {
+                    val reason = root["reason"]?.jsonPrimitive?.contentOrNull
+                    engine.promptQueued(
+                        if (reason == "shellRunning") composerStrings.queuedWhileShellRunning else reason,
+                    )
+                } else {
+                    scheduleSettlement(runId)
+                }
+            }
+            // The server answered: the message is committed exactly once.
+            withContext(cacheDispatcher) { store.remove(origin, entry.id) }
+            return true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (engine.state.value.runId != runId) {
+                // Another turn took over; the POST itself did land.
+                withContext(cacheDispatcher) { store.remove(origin, entry.id) }
+                return false
+            }
+            return outboxDeliveryFailed(origin, entry, error, ownsRun = true).also {
+                // Nothing more goes out while a refusal/ownership issue stands.
+                if (it) refreshOutbox()
+            }
+        } finally {
+            pumpEffects()
+        }
+    }
+
+    /** Running session: the queued message is steered or queued per preference. */
+    private suspend fun deliverOutboxQueue(origin: String, entry: OutboxEntry, steer: Boolean): Boolean {
+        val sid = sessionId
+        val store = outbox
+        if (sid == null || store == null || sid != entry.sessionId) {
+            releaseOutbox(origin, entry)
+            return false
+        }
+        return try {
+            val reply = if (steer) {
+                api.steer(sid, entry.text, entry.images)
+            } else {
+                api.followUp(sid, entry.text, entry.images)
+            }
+            if (isQueuedWhileShellRunning(reply)) {
+                _events.tryEmit(ChatEvent.Toast(composerStrings.queuedWhileShellRunning))
+            }
+            withContext(cacheDispatcher) { store.remove(origin, entry.id) }
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // This path never called `sendStarted`: the running turn belongs to
+            // the server, so a failed steer/follow-up must not roll it back.
+            outboxDeliveryFailed(origin, entry, error, ownsRun = false)
+        }
+    }
+
+    /** Cancel a queued message (the pending bubble's action). */
+    fun cancelOutbox(id: String) {
+        val store = outbox ?: return
+        val origin = currentOrigin() ?: return
+        viewModelScope.launch {
+            withContext(cacheDispatcher) { store.remove(origin, id) }
+            refreshOutbox()
+        }
+    }
+
+    /** Edit a queued message: take it back into the composer, then drop it. */
+    fun editOutbox(id: String) {
+        val store = outbox ?: return
+        val origin = currentOrigin() ?: return
+        val sid = sessionId ?: return
+        viewModelScope.launch {
+            val entry = withContext(cacheDispatcher) {
+                store.read(origin).entries.firstOrNull { it.id == id && it.sessionId == sid }
+            } ?: return@launch
+            withContext(cacheDispatcher) { store.remove(origin, id) }
+            refreshOutbox()
+            // Back into the field it was typed in (draft key of this chat),
+            // text and kept images together.
+            recoverDraft(composer.currentDraftKey, entry.text, entry.images)
+        }
+    }
+
+    /** "Quote" of a message row: a `> quoted` block at the caret. */
+    fun quoteMessage(text: String) {
+        composer.insertQuote(text)
+    }
+
+    /**
+     * A leading `/name` that addresses a snippet is expanded before routing.
+     * Client built-ins, web commands and omp's own commands keep their names:
+     * a template never shadows a real command.
+     */
+    private fun expandSubmittedTemplate(submission: ComposerSubmission): ComposerSubmission {
+        val store = templates ?: return submission
+        val list = store.current()
+        if (list.isEmpty()) return submission
+        val raw = submission.raw.trimStart()
+        if (!raw.startsWith("/")) return submission
+        val name = raw.removePrefix("/").substringBefore(' ').substringBefore('\n').lowercase()
+        if (name.isEmpty()) return submission
+        if (isClientBuiltinCommand(name) || getWebSlashCommand(name) != null) return submission
+        if (engine.state.value.remoteCommands.any { it.name == name || it.name == "skill:$name" }) return submission
+        val expanded = expandTemplateCommand(raw, list) ?: return submission
+        return submission.copy(prompt = expanded)
     }
 
     /** `abort_retry`: let the auto-retry banner stop waiting for the backoff. */
@@ -3331,6 +3789,11 @@ class ChatViewModel(
         const val LIVE_STATE_SUBMIT_MAX_RETRY_MILLIS = 4_000L
         /** Wait for a read that is already on the wire instead of stacking GETs. */
         const val LIVE_STATE_SUBMIT_POLL_MILLIS = 150L
+        /**
+         * How long the queue waits for a session whose run state is unknown
+         * before it leaves delivery to the next trigger (reconnect, poll).
+         */
+        const val OUTBOX_LIVE_STATE_TIMEOUT_MILLIS = 10_000L
         const val PROMPT_SETTLE_FIRST_MILLIS = 800L
         const val PROMPT_SETTLE_INTERVAL_MILLIS = 600L
         const val PROMPT_SETTLE_ATTEMPTS = 32

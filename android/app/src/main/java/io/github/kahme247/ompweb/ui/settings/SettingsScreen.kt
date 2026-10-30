@@ -453,6 +453,7 @@ private fun SettingsTabContent(
         SettingsTab.GENERAL -> GeneralSettingsTab(
             settings = container.settings,
             snapshot = snapshot,
+            templates = container.templates,
             themeLabel = themeLabel,
             highlight = highlight,
             voices = voices,

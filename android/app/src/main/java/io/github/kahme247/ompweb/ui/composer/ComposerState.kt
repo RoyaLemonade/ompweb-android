@@ -48,6 +48,8 @@ data class ComposerUiState(
     val bashMode: Boolean = false,
     val bashExcluded: Boolean = false,
     val readingAttachments: Boolean = false,
+    /** User snippets of this device, shown in the `+` menu and the `/` palette. */
+    val templates: List<io.github.kahme247.ompweb.data.ChatTemplate> = emptyList(),
     /** Last programmatic text rewrite; the field applies it when the id changes. */
     val edit: ComposerEdit? = null,
 ) {

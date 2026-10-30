@@ -577,6 +577,30 @@ fun ComposerBar(
                                     pasteImage()
                                 },
                             )
+                            if (state.templates.isNotEmpty()) {
+                                HorizontalDivider()
+                                Text(
+                                    text = stringResource(R.string.composer_templates),
+                                    color = colors.textDim,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                )
+                                state.templates.forEach { template ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = template.title,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        },
+                                        onClick = {
+                                            plusOpen = false
+                                            composer.insertTemplate(template)
+                                        },
+                                    )
+                                }
+                            }
                             HorizontalDivider()
                             Text(
                                 text = stringResource(R.string.composer_tools),

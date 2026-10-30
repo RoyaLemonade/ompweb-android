@@ -213,6 +213,10 @@
     <string name="chat_stop">Stop</string>
     <string name="chat_jump_latest">Jump to latest</string>
     <string name="chat_copy">Copy</string>
+    <string name="chat_quote">Quote</string>
+    <string name="chat_share">Share</string>
+    <string name="chat_share_chooser">Share message</string>
+    <string name="chat_more_actions">More actions</string>
     <string name="chat_read">Read</string>
     <string name="chat_new_session">New session</string>
     <string name="chat_forking">Forking…</string>
@@ -304,6 +308,16 @@
     <string name="chat_link_unavailable">No app can open this link</string>
     <string name="chat_image_external">Tap to load image from %1$s</string>
     <string name="chat_interrupted">Interrupted by user</string>
+    <!-- Offline outbox: a message that never left the device, shown as a pending user bubble. -->
+    <string name="chat_outbox_waiting">Waiting for connection</string>
+    <string name="chat_outbox_edit">Edit</string>
+    <string name="chat_outbox_cancel">Cancel</string>
+    <string name="chat_outbox_queued">No connection — message queued and sent when you are back online.</string>
+    <string name="chat_outbox_failed">The message could not be saved for later — it stays in the input field.</string>
+    <string name="chat_outbox_delivery_unknown">The connection dropped while sending a queued message; it may already have reached the server.</string>
+    <string name="chat_outbox_stale">A queued message may already have been sent before the app was closed — it was not sent twice.</string>
+    <string name="chat_outbox_claim_failed">A queued message could not be prepared for sending (app storage full) — it stays in the queue.</string>
+    <string name="chat_outbox_images">%1$d image(s) attached</string>
     <string name="detail_session_details">Session details</string>
     <string name="detail_branches">Branches</string>
 </resources>

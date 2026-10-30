@@ -331,6 +331,8 @@ fun ChatScreen(
                 downloadLauncher.launch(path.substringAfterLast('/').ifBlank { "bash-output.txt" })
             },
             onEditFromHere = { prevAssistantEntryId, text -> viewModel.editFromHere(prevAssistantEntryId, text) },
+            onQuote = { text -> viewModel.quoteMessage(text) },
+            onShare = { text -> shareText(context, text) },
         )
     }
 
@@ -438,17 +440,24 @@ fun ChatScreen(
     val showScrollRail = LocalConfiguration.current.screenWidthDp >= 600
     val streaming = ui.engine.streaming
     val pending = ui.engine.pendingUser
+    val outbox = ui.outbox
     // Speaker headers and day dividers: one plan for the rendered window plus
     // the optimistic prompt and the streaming reply, so a run of blocks by the
     // same speaker shares a single header across items.
     val transcriptHeaders = remember(
         displayedRows,
         pending,
+        outbox,
         streaming?.key,
         streaming?.model,
         streaming?.timestamp,
     ) {
         val blocks = TranscriptFormat.headerBlocks(displayedRows).toMutableList()
+        // Queued messages come after the transcript (and before a submit that
+        // is already on its way), all spoken by the user.
+        outbox.forEach { bubble ->
+            blocks += HeaderBlock("outbox-${bubble.id}", Speaker(SpeakerRole.You), null)
+        }
         if (pending != null) {
             blocks += HeaderBlock("pending", Speaker(SpeakerRole.You), null)
         }
@@ -459,8 +468,8 @@ fun ChatScreen(
     }
     // The tail anchor is the last item: a hairline spacer, so scrolling to it
     // lands on the very bottom whatever the height of the rows above it.
-    val totalItems = displayedRows.size + headerOffset + (if (pending != null) 1 else 0) +
-        (if (streaming != null) 1 else 0) + 1
+    val totalItems = displayedRows.size + headerOffset + outbox.size +
+        (if (pending != null) 1 else 0) + (if (streaming != null) 1 else 0) + 1
 
     // Follow the tail while the reader has not scrolled away from it; sending a
     // prompt re-enables following (web `useAgentSession` send scroll intent).
@@ -780,7 +789,7 @@ fun ChatScreen(
                                     )
                                 }
                             }
-                            if (rows.isEmpty() && streaming == null && pending == null) {
+                            if (rows.isEmpty() && streaming == null && pending == null && outbox.isEmpty()) {
                                 item(key = "state") {
                                     TranscriptEmptyState(
                                         loading = ui.engine.historyLoading && !ui.engine.historyLoaded,
@@ -841,6 +850,17 @@ fun ChatScreen(
                                     headers = transcriptHeaders,
                                     dayBreaks = dayBreaks,
                                 )
+                            }
+                            // Offline outbox: never sent, so not transcript rows.
+                            ui.outbox.forEach { bubble ->
+                                item(key = "outbox-${bubble.id}") {
+                                    OutboxBubble(
+                                        bubble = bubble,
+                                        header = transcriptHeaders["outbox-${bubble.id}"],
+                                        onEdit = { viewModel.editOutbox(bubble.id) },
+                                        onCancel = { viewModel.cancelOutbox(bubble.id) },
+                                    )
+                                }
                             }
                             pending?.let { pendingUser ->
                                 item(key = "pending") {

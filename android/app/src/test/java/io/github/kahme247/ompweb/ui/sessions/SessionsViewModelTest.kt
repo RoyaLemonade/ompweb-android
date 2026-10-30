@@ -70,6 +70,8 @@ class SessionsViewModelTest {
     private val searchResponses = java.util.concurrent.LinkedBlockingQueue<MockResponse>()
     /** Every `/api/sessions/messages/search` path the view model requested. */
     private val searchPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+    /** Every `/api/sessions/<id>/auto-name` path the view model requested. */
+    private val autoNamePaths = java.util.Collections.synchronizedList(mutableListOf<String>())
     /** The shell's `/api/app-info` answer; the app gates "In messages" on it. */
     private val serverInfo = MutableStateFlow<AppInfo?>(
         AppInfo(
@@ -97,8 +99,10 @@ class SessionsViewModelTest {
                     searchPaths += request.path.orEmpty()
                     searchResponses.poll() ?: MockResponse().setResponseCode(500)
                 }
-                request.path?.endsWith("/auto-name") == true ->
+                request.path?.endsWith("/auto-name") == true -> {
+                    autoNamePaths += request.path.orEmpty()
                     autoNameResponses.poll() ?: MockResponse().setResponseCode(500)
+                }
                 request.path?.matches(Regex("/api/sessions/[^/]+")) == true ->
                     detailResponses.poll() ?: MockResponse().setResponseCode(500)
                 request.path?.startsWith("/api/sessions") == true ->
@@ -582,6 +586,11 @@ class SessionsViewModelTest {
     fun `an exited badge survives a session list reload`() {
         sessionResponses.add(sessions("""{"sessions":[{"id":"a"}],"runningSessionIds":[]}"""))
         viewModel.setActive(true)
+        // The reload below cancels whatever load is still in flight. Its
+        // request has to have taken its queued answer first, otherwise the
+        // reload consumes the *first* response and the second one answers
+        // nobody (the list then never reaches two sessions).
+        waitFor("initial list") { viewModel.state.value.sessions.map { it.id } == listOf("a") }
         val stream = open()
         waitFor("mux connected") { viewModel.state.value.connection == ConnectionState.Connected }
         waitFor("running subscription") { transport.subscribes.isNotEmpty() }
@@ -918,13 +927,18 @@ class SessionsViewModelTest {
         viewModel.setActive(true)
         waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
 
-        val before = server.requestCount
         viewModel.autoNameSession("s1")
         waitFor("guard notice") {
             viewModel.state.value.notice?.text?.contains("at least one message") == true
         }
+        // The initial load's project/home requests may still be in flight, so
+        // the server-wide request count is no baseline. This asks the precise
+        // question: did the auto-name route get called?
         Thread.sleep(100)
-        assertEquals("a session without messages is never named", before, server.requestCount)
+        assertTrue(
+            "a session without messages is never named, requests=$autoNamePaths",
+            autoNamePaths.isEmpty(),
+        )
         assertEquals(AutoNamePhase.Idle, viewModel.state.value.autoName.phase)
     }
 
@@ -1596,7 +1610,11 @@ class SessionsViewModelTest {
 
     private class FakeTransport : EventTransport {
         val streams = Channel<FakeStream>(Channel.UNLIMITED)
-        val subscribes = mutableListOf<Subscription>()
+        // The mux appends from its own coroutine; the test polls from the JUnit
+        // thread. A plain list's size is not guaranteed to become visible, and
+        // a spin loop may legally keep reading the stale value.
+        val subscribes: MutableList<Subscription> =
+            java.util.Collections.synchronizedList(mutableListOf<Subscription>())
         var streamsOpened = 0
             private set
 

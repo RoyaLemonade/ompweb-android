@@ -41,6 +41,16 @@ data class ComposerStrings(
     val btwAttachmentsUnsupported: String = "",
     val imageSkipped: String = "%1\$d image(s) skipped (up to %2\$s each).",
     val filesSkipped: String = "%1\$d file(s) skipped.",
+    /** A send that never left the device was kept for later. */
+    val outboxQueued: String = "",
+    /** The outbox could not store the message; it went back into the field. */
+    val outboxFailed: String = "",
+    /** A queued delivery may have reached the server (timeout) and is not retried. */
+    val outboxDeliveryUnknown: String = "",
+    /** A queued message claimed by a dead process may already have been sent. */
+    val outboxStale: String = "",
+    /** The queue could not mark a message as "on its way"; it stays queued. */
+    val outboxClaimFailed: String = "",
     /** Localized `[hint]` per web-command key (`WebSlashCommand.argumentHintKey`). */
     val usageHints: Map<String, String> = emptyMap(),
     val builtinCommands: List<SlashCommandItem> = emptyList(),
@@ -109,6 +119,11 @@ data class ComposerStrings(
                 btwAttachmentsUnsupported = app.getString(R.string.btw_attachments_unsupported),
                 imageSkipped = app.getString(R.string.composer_attach_image_skipped),
                 filesSkipped = app.getString(R.string.composer_attach_file_skipped),
+                outboxQueued = app.getString(R.string.chat_outbox_queued),
+                outboxFailed = app.getString(R.string.chat_outbox_failed),
+                outboxDeliveryUnknown = app.getString(R.string.chat_outbox_delivery_unknown),
+                outboxStale = app.getString(R.string.chat_outbox_stale),
+                outboxClaimFailed = app.getString(R.string.chat_outbox_claim_failed),
                 usageHints = mapOf(
                     "composer_cmd_goal_arg" to app.getString(R.string.composer_cmd_goal_arg),
                     "composer_cmd_plan_arg" to app.getString(R.string.composer_cmd_plan_arg),

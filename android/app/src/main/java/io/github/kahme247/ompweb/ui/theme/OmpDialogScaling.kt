@@ -44,7 +44,7 @@ fun OmpDialogContent(
             fontScale = base.fontScale * preferences.fontSize.fontScale,
         )
     }
-    val theme = resolveOmpTheme(preferences.themeId)
+    val theme = resolveOmpPalette(preferences.themeId, preferences.useSystemColors)
     CompositionLocalProvider(
         LocalOmpDisplayPreferences provides preferences,
         LocalDensity provides density,

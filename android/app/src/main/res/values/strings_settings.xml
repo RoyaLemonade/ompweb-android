@@ -47,6 +47,8 @@
     <string name="settings_theme">Theme</string>
     <string name="settings_theme_desc">Choose the app\'s colour theme.</string>
     <string name="settings_theme_system">System</string>
+    <string name="settings_material_you">Use system colors (Material You)</string>
+    <string name="settings_material_you_desc">Derive the app palette from the Android wallpaper colors. Overrides the theme choice while on; follows the system light or dark mode.</string>
     <string name="settings_font_size">Chat Font Size</string>
     <string name="settings_font_size_desc">Adjust text size across conversation messages, code blocks, and markdown output.</string>
     <string name="settings_font_sm">Small</string>
@@ -267,4 +269,22 @@
     <string name="settings_dictation_language">Dictation language</string>
     <string name="settings_dictation_language_desc">Language for speech recognition on this phone. The server uses its own language setting.</string>
     <string name="settings_dictation_language_device">Device language</string>
+
+    <!-- Templates (per-device snippets) -->
+    <string name="settings_templates_title">Templates</string>
+    <string name="settings_templates_desc">Reusable snippets for this phone. They appear in the composer\'s + menu and answer their /name in the slash palette. Templates are kept on this device, not per server.</string>
+    <string name="settings_templates_empty">No templates yet. Add one to insert long instructions in one tap.</string>
+    <string name="settings_templates_add">Add template</string>
+    <string name="settings_templates_edit">Edit template</string>
+    <string name="settings_templates_new">New template</string>
+    <string name="settings_templates_title_label">Title</string>
+    <string name="settings_templates_text_label">Text</string>
+    <string name="settings_templates_save">Save</string>
+    <string name="settings_templates_delete">Delete template</string>
+    <string name="settings_templates_delete_body">Delete “%1$s”? This cannot be undone.</string>
+    <string name="settings_templates_delete_confirm">Delete</string>
+    <string name="settings_templates_move_up">Move %1$s up</string>
+    <string name="settings_templates_move_down">Move %1$s down</string>
+    <string name="settings_templates_edit_row">Edit %1$s</string>
+    <string name="settings_templates_delete_row">Delete %1$s</string>
 </resources>

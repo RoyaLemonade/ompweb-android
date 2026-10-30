@@ -12,10 +12,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,9 +26,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -42,11 +46,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,6 +66,7 @@ import io.github.kahme247.ompweb.chat.ChatState
 import io.github.kahme247.ompweb.chat.formatGenerationRate
 import io.github.kahme247.ompweb.chat.HeaderSlot
 import io.github.kahme247.ompweb.chat.MOUNT_NOTICE
+import io.github.kahme247.ompweb.chat.OutboxBubbleUi
 import io.github.kahme247.ompweb.chat.messageSpeed
 import io.github.kahme247.ompweb.chat.PASSIVE_TOOL_CONTEXT
 import io.github.kahme247.ompweb.chat.Speaker
@@ -85,6 +93,7 @@ import io.github.kahme247.ompweb.ui.render.isLargeMessage
 import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
 import io.github.kahme247.ompweb.ui.theme.OmpAlertDialog
 import io.github.kahme247.ompweb.ui.theme.OmpCardRadius
+import io.github.kahme247.ompweb.ui.theme.OmpDropdownMenu
 import io.github.kahme247.ompweb.ui.theme.OmpMonoFontFamily
 import kotlin.math.roundToInt
 import kotlinx.serialization.json.JsonObject
@@ -104,6 +113,10 @@ internal class ChatRowCallbacks(
     val onDownloadBashOutput: (String) -> Unit,
     /** "Edit from here": branch back to the previous assistant answer and prefill. */
     val onEditFromHere: (prevAssistantEntryId: String, text: String) -> Unit,
+    /** Put a `> quoted` block into the composer at the caret. */
+    val onQuote: (String) -> Unit,
+    /** Open the Android share sheet with the message text. */
+    val onShare: (String) -> Unit,
 )
 
 /** One rendered LazyColumn item of the transcript. */
@@ -466,6 +479,7 @@ private fun UserRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 CopyAction(text = message.text)
+                MessageActions(text = message.text, callbacks = callbacks)
                 if (editTarget != null) {
                     TextButton(onClick = { callbacks.onEditFromHere(editTarget, message.text) }) {
                         Text(
@@ -649,6 +663,7 @@ internal fun AssistantRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (text.isNotBlank()) CopyAction(text = text)
+                if (text.isNotBlank()) MessageActions(text = text, callbacks = callbacks)
                 if (text.isNotBlank()) {
                     val speaking = state.speakingId == speakId
                     TextButton(onClick = {
@@ -1952,6 +1967,7 @@ internal fun SpeakerHeaderRow(speaker: Speaker, timestamp: Long?) {
         SpeakerRole.Subagent -> colors.secondaryAccent ?: colors.accent
         SpeakerRole.Assistant -> colors.backgroundSubtle
     }
+    val badgeFontSize = with(LocalDensity.current) { 9.dp.toSp() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1974,10 +1990,26 @@ internal fun SpeakerHeaderRow(speaker: Speaker, timestamp: Long?) {
         ) {
             Text(
                 text = speaker.initial.toString(),
-                color = if (speaker.role == SpeakerRole.Assistant) colors.textMuted else colors.onAccent,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = OmpMonoFontFamily,
+                modifier = Modifier
+                    .wrapContentSize(Alignment.Center)
+                    // A line box centres ascent+descent, not the cap height of
+                    // the initial; the monospace face puts the cap ~1px above
+                    // the circle's centre at every scale, so the glyph gets a
+                    // half-dp optical correction (it scales with density).
+                    .offset(y = 0.5.dp),
+                style = TextStyle(
+                    color = if (speaker.role == SpeakerRole.Assistant) colors.textMuted else colors.onAccent,
+                    fontSize = badgeFontSize,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = OmpMonoFontFamily,
+                    textAlign = TextAlign.Center,
+                    // The default font padding adds asymmetric space above the
+                    // glyph and pushes the letter off the circle's centre.
+                    // Trimming it is what makes the initial sit exactly in the
+                    // middle at every font scale (the size is pinned to dp
+                    // below so the fixed 18dp badge never outgrows its text).
+                    platformStyle = PlatformTextStyle(includeFontPadding = false),
+                ),
             )
         }
         Text(
@@ -2095,6 +2127,105 @@ internal fun PendingUserBubble(text: String, header: HeaderSlot? = null) {
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
+        }
+    }
+}
+
+/**
+ * A message of the offline outbox: it never reached the server (no
+ * connection), so it is not a transcript row but a user bubble with the
+ * "waiting" state and the two ways out — edit it back into the composer, or
+ * cancel it. [OutboxBubbleUi] carries the images' count only; the payload stays
+ * in the store until delivery.
+ */
+@Composable
+internal fun OutboxBubble(
+    bubble: OutboxBubbleUi,
+    header: HeaderSlot? = null,
+    onEdit: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val colors = LocalOmpColors.current
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        BlockHeader(header)
+        Surface(
+            color = colors.userBackground,
+            shape = RoundedCornerShape(OmpCardRadius),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                if (bubble.text.isNotBlank()) {
+                    Text(bubble.text, color = colors.text, fontSize = 14.sp)
+                }
+                if (bubble.imageCount > 0) {
+                    Text(
+                        text = stringResource(R.string.chat_outbox_images, bubble.imageCount),
+                        color = colors.textDim,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.chat_outbox_waiting),
+                    color = colors.accent,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+                Row(modifier = Modifier.padding(top = 2.dp)) {
+                    TextButton(onClick = onEdit) {
+                        Text(
+                            text = stringResource(R.string.chat_outbox_edit),
+                            fontSize = 11.sp,
+                            color = colors.textDim,
+                        )
+                    }
+                    TextButton(onClick = onCancel) {
+                        Text(
+                            text = stringResource(R.string.chat_outbox_cancel),
+                            fontSize = 11.sp,
+                            color = colors.textDim,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The overflow of a message row: Quote and Share sit one tap behind Copy, so
+ * a phone-sized footer keeps its width. Quote goes through the same formatter
+ * the composer's insertion uses (`chat/Quotes.kt`).
+ */
+@Composable
+private fun MessageActions(text: String, callbacks: ChatRowCallbacks) {
+    if (text.isBlank()) return
+    val colors = LocalOmpColors.current
+    var open by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { open = true }) {
+            Icon(
+                imageVector = Icons.Filled.MoreVert,
+                contentDescription = stringResource(R.string.chat_more_actions),
+                tint = colors.textDim,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        OmpDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_quote)) },
+                onClick = {
+                    open = false
+                    callbacks.onQuote(text)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_share)) },
+                onClick = {
+                    open = false
+                    callbacks.onShare(text)
+                },
+            )
         }
     }
 }
