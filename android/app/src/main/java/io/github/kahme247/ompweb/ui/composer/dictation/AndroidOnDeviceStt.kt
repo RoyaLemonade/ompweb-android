@@ -15,6 +15,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
+import io.github.kahme247.ompweb.domain.DictationSegmentSource
 
 /**
  * [OnDeviceStt] over Android's [SpeechRecognizer].
@@ -326,7 +327,7 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
             val text = firstResult(partialResults) ?: return
             if (text.isBlank()) return
             if (partialResults?.getBoolean(EXTRA_FINAL_SEGMENT, false) == true) {
-                listener?.onSegment(text)
+                listener?.onSegment(text, DictationSegmentSource.FinalPartial)
             } else {
                 listener?.onPartial(text)
             }
@@ -336,7 +337,7 @@ class AndroidOnDeviceStt(context: Context) : OnDeviceStt {
         override fun onSegmentResults(segmentResults: Bundle) {
             val text = firstResult(segmentResults) ?: return
             if (text.isBlank()) return
-            listener?.onSegment(text)
+            listener?.onSegment(text, DictationSegmentSource.SegmentResults)
         }
 
         /** API 33+: the segmented session is over; the view model keeps what it heard. */

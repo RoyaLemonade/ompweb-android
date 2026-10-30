@@ -1,5 +1,7 @@
 package io.github.kahme247.ompweb.ui.composer.dictation
 
+import io.github.kahme247.ompweb.domain.DictationSegmentSource
+
 /** Why on-device recognition ended without an error message from the server. */
 enum class OnDeviceSttError {
     /** No recognizer installed (no Google app on this phone). */
@@ -88,9 +90,11 @@ interface OnDeviceStt {
          * One utterance the recognizer finalized because the speaker paused.
          * One take spans several of them: on a Pixel the next hypothesis
          * starts with the new words only, so a segment has to be added to the
-         * take instead of being replaced by what follows.
+         * take instead of being replaced by what follows. [source] names the
+         * callback that delivered it, so the same utterance reported on both
+         * paths is added once while a repeated phrase is kept.
          */
-        fun onSegment(text: String)
+        fun onSegment(text: String, source: DictationSegmentSource)
 
         fun onFinal(text: String)
 

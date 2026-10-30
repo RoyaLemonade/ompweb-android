@@ -2,6 +2,7 @@ package io.github.kahme247.ompweb.ui.composer.dictation
 
 import io.github.kahme247.ompweb.data.SettingsSnapshot
 import io.github.kahme247.ompweb.domain.DictationEngine
+import io.github.kahme247.ompweb.domain.DictationSegmentSource
 import io.github.kahme247.ompweb.domain.DictationState
 import io.github.kahme247.ompweb.domain.ServerSttRegistry
 import io.github.kahme247.ompweb.domain.ServerSttSupport
@@ -14,6 +15,8 @@ import io.github.kahme247.ompweb.testutil.FakeOnDeviceStt
 import io.github.kahme247.ompweb.testutil.FakeSttApi
 import io.github.kahme247.ompweb.testutil.FakeVoiceRecorder
 import io.github.kahme247.ompweb.testutil.MemoryDictationStore
+import io.github.kahme247.ompweb.testutil.awaitValue
+import io.github.kahme247.ompweb.testutil.waitFor
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -95,21 +98,11 @@ class DictationViewModelTest {
     }
 
     /** The upload reads the file on [Dispatchers.IO]; wait for its answer. */
-    private fun awaitFailed(vm: DictationViewModel): DictationState.Failed {
-        await("failure state, still ${vm.state.value}") { vm.state.value is DictationState.Failed }
-        return vm.state.value as DictationState.Failed
-    }
+    private fun awaitFailed(vm: DictationViewModel): DictationState.Failed =
+        vm.state.awaitValue("the failure state") { it is DictationState.Failed } as DictationState.Failed
 
     private fun awaitCalls(api: FakeSttApi, count: Int) {
-        await("$count calls, saw ${api.calls}") { api.calls.size >= count }
-    }
-
-    private fun await(what: String, condition: () -> Boolean) {
-        repeat(400) {
-            if (condition()) return
-            Thread.sleep(5)
-        }
-        throw AssertionError("timed out waiting for $what")
+        waitFor("$count calls, saw ${api.calls}") { api.calls.size >= count }
     }
 
     @Test
@@ -209,7 +202,7 @@ class DictationViewModelTest {
         listener.onPartial("hallo")
         assertEquals("Reply with hallo", text)
 
-        listener.onSegment("hallo")
+        listener.onSegment("hallo", DictationSegmentSource.SegmentResults)
         assertEquals("the finalized utterance stays visible", "Reply with hallo", text)
 
         listener.onPartial("wie geht es dir")
@@ -225,6 +218,24 @@ class DictationViewModelTest {
     }
 
     @Test
+    fun `a phrase said again after a pause is kept`() {
+        val vm = viewModel(SettingsSnapshot(loaded = true, dictationEngine = "on_device"))
+        vm.start(SttAfter.Insert)
+        val listener = speech.listener!!
+
+        listener.onSegment("ok", DictationSegmentSource.SegmentResults)
+        listener.onSegment("ok weiter", DictationSegmentSource.SegmentResults)
+        assertEquals(
+            "a repeated phrase is the user's text, not a re-send",
+            "Reply with ok ok weiter",
+            text,
+        )
+
+        listener.onFinal("OK OK weiter geht es.")
+        assertEquals("Reply with OK OK weiter geht es.", text)
+    }
+
+    @Test
     @OptIn(ExperimentalCoroutinesApi::class)
     fun `the stop fallback keeps every utterance when the recognizer never answers`() {
         val scheduler = TestCoroutineScheduler()
@@ -234,7 +245,7 @@ class DictationViewModelTest {
         val listener = speech.listener!!
 
         listener.onPartial("hallo")
-        listener.onSegment("hallo")
+        listener.onSegment("hallo", DictationSegmentSource.SegmentResults)
         listener.onPartial("wie geht es dir")
 
         vm.stop()
@@ -307,7 +318,7 @@ class DictationViewModelTest {
         vm.bindScope("sessions/a")
 
         vm.start(SttAfter.Insert)
-        await("the recorder starts after the probe") { recorder.started }
+        waitFor("the recorder starts after the probe") { recorder.started }
         vm.stop()
         val failed = awaitFailed(vm)
 

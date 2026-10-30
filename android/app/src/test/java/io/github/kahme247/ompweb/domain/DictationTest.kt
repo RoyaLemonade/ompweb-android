@@ -648,7 +648,7 @@ class DictationTest {
         // The speaker pauses: the recognizer finalizes the utterance and
         // starts the next one from an empty hypothesis (on a Pixel the
         // hypothesis after the pause contains only the new words).
-        buffer.onSegment(first.text, first.caret, "hallo")
+        buffer.onSegment(first.text, first.caret, "hallo", DictationSegmentSource.SegmentResults)
         val second = buffer.onPartial(first.text, first.caret, "wie geht es dir")
 
         assertEquals("Reply with hallo wie geht es dir", second?.text)
@@ -656,24 +656,94 @@ class DictationTest {
     }
 
     @Test
-    fun `a hypothesis that repeats the finalized utterance is not duplicated`() {
+    fun `an utterance that starts with the committed words is kept`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onSegment("", 0, "ok", DictationSegmentSource.SegmentResults)!!
+        assertEquals("ok", first.text)
+
+        // The speaker says "ok" again, then continues: the words are the
+        // user's, not a re-send of what was already committed.
+        val second = buffer.onSegment(first.text, first.caret, "ok weiter", DictationSegmentSource.SegmentResults)
+
+        assertEquals("ok ok weiter", second?.text)
+        assertEquals("ok ok weiter", buffer.onFinal(second!!.text, second.caret, "")?.text)
+    }
+
+    @Test
+    fun `a repeated short phrase is kept`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onSegment("", 0, "ja", DictationSegmentSource.SegmentResults)!!
+        val second = buffer.onSegment(first.text, first.caret, "ja genau", DictationSegmentSource.SegmentResults)!!
+        assertEquals("ja ja genau", second.text)
+
+        // A hypothesis that repeats the previous words belongs to the next
+        // utterance, not to the committed one.
+        val third = buffer.onPartial(second.text, second.caret, "ja genau nicht")!!
+
+        assertEquals("ja ja genau ja genau nicht", third.text)
+        assertEquals(
+            "the take's utterances survive a blank final",
+            "ja ja genau ja genau nicht",
+            buffer.onFinal(third.text, third.caret, "")?.text,
+        )
+    }
+
+    @Test
+    fun `a segmented session keeps every utterance and its empty final`() {
+        val buffer = LiveDictationBuffer()
+        var text = "Reply with"
+        var caret = text.length
+        listOf("hallo", "du", "wie geht es dir").forEach { segment ->
+            val insertion = buffer.onSegment(text, caret, segment, DictationSegmentSource.SegmentResults)!!
+            text = insertion.text
+            caret = insertion.caret
+        }
+
+        assertEquals("Reply with hallo du wie geht es dir", text)
+        assertEquals(
+            "an empty onResults keeps the segmented take",
+            "Reply with hallo du wie geht es dir",
+            buffer.onFinal(text, caret, "")?.text,
+        )
+    }
+
+    @Test
+    fun `a hypothesis after a pause starts a new utterance even when it repeats the words`() {
         val buffer = LiveDictationBuffer()
         val first = buffer.onPartial("", 0, "hallo du")!!
-        buffer.onSegment(first.text, first.caret, "hallo du")
+        buffer.onSegment(first.text, first.caret, "hallo du", DictationSegmentSource.SegmentResults)
 
         val next = buffer.onPartial(first.text, first.caret, "hallo du wie geht es dir")
 
-        assertEquals("hallo du wie geht es dir", next?.text)
+        assertEquals("hallo du hallo du wie geht es dir", next?.text)
+    }
+
+    @Test
+    fun `an utterance the recognizer delivered on both paths is added once`() {
+        val buffer = LiveDictationBuffer()
+        val first = buffer.onSegment("", 0, "hallo du", DictationSegmentSource.SegmentResults)!!
+
+        // The same utterance again as the `final_result` partial of a service
+        // that reports on both paths: one utterance, one insertion.
+        buffer.onSegment(first.text, first.caret, "hallo du", DictationSegmentSource.FinalPartial)
+        assertEquals("hallo du", buffer.text)
+
+        // The next utterance may repeat the words: only the re-send of the
+        // same utterance is dropped.
+        val repeated = buffer.onSegment(first.text, first.caret, "hallo du", DictationSegmentSource.FinalPartial)
+        assertEquals("hallo du hallo du", repeated?.text)
     }
 
     @Test
     fun `a final that repeats the utterances of the take is not duplicated`() {
         val buffer = LiveDictationBuffer()
-        val first = buffer.onPartial("draft", 5, "hallo")!!
-        buffer.onSegment(first.text, first.caret, "hallo")
-        val second = buffer.onPartial(first.text, first.caret, "hallo wie")!!
+        val first = buffer.onSegment("draft", 5, "hallo", DictationSegmentSource.SegmentResults)!!
+        assertEquals("draft hallo", first.text)
+        val second = buffer.onSegment(first.text, first.caret, "wie", DictationSegmentSource.SegmentResults)!!
         assertEquals("draft hallo wie", second.text)
 
+        // The session's transcript contains both utterances: it replaces the
+        // take instead of appending them a second time.
         val final = buffer.onFinal(second.text, second.caret, "Hallo wie geht es dir.")
 
         assertEquals("draft Hallo wie geht es dir.", final?.text)
@@ -682,9 +752,8 @@ class DictationTest {
     @Test
     fun `a blank final keeps every finalized utterance of the take`() {
         val buffer = LiveDictationBuffer()
-        val first = buffer.onPartial("", 0, "hallo")!!
-        buffer.onSegment(first.text, first.caret, "hallo")
-        val second = buffer.onPartial(first.text, first.caret, "hallo du")!!
+        val first = buffer.onSegment("", 0, "hallo", DictationSegmentSource.SegmentResults)!!
+        val second = buffer.onSegment(first.text, first.caret, "du", DictationSegmentSource.SegmentResults)!!
 
         val final = buffer.onFinal(second.text, second.caret, "")
 
@@ -696,7 +765,7 @@ class DictationTest {
     fun `a user edit after a pause keeps the visible text and re-anchors`() {
         val buffer = LiveDictationBuffer()
         val first = buffer.onPartial("draft", 5, "hallo")!!
-        buffer.onSegment(first.text, first.caret, "hallo")
+        buffer.onSegment(first.text, first.caret, "hallo", DictationSegmentSource.SegmentResults)
 
         // The user typed after the live text; the caret is now after the edit.
         val edited = "${first.text}!"

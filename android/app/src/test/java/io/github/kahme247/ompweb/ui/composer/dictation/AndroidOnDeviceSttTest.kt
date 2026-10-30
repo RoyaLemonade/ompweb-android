@@ -7,6 +7,7 @@ import android.speech.RecognitionSupport
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.test.core.app.ApplicationProvider
+import io.github.kahme247.ompweb.domain.DictationSegmentSource
 import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -45,6 +46,7 @@ class AndroidOnDeviceSttTest {
     private class RecordingListener : OnDeviceStt.Listener {
         val partials = mutableListOf<String>()
         val segments = mutableListOf<String>()
+        val sources = mutableListOf<DictationSegmentSource>()
         var final: String? = null
         var error: OnDeviceSttError? = null
 
@@ -52,8 +54,9 @@ class AndroidOnDeviceSttTest {
             partials += text
         }
 
-        override fun onSegment(text: String) {
+        override fun onSegment(text: String, source: DictationSegmentSource) {
             segments += text
+            sources += source
         }
 
         override fun onFinal(text: String) {
@@ -279,6 +282,11 @@ class AndroidOnDeviceSttTest {
             putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("hallo du"))
         })
         assertEquals(listOf("hallo du"), listener.segments)
+        assertEquals(
+            "the segmented-session path names its source",
+            listOf(DictationSegmentSource.SegmentResults),
+            listener.sources,
+        )
         assertEquals("a finalized utterance is no hypothesis", emptyList<String>(), listener.partials)
     }
 
@@ -293,6 +301,11 @@ class AndroidOnDeviceSttTest {
             "recognizers without segmented sessions mark finalized utterances this way",
             listOf("hallo du"),
             listener.segments,
+        )
+        assertEquals(
+            "the final_result path names its source",
+            listOf(DictationSegmentSource.FinalPartial),
+            listener.sources,
         )
         assertEquals(emptyList<String>(), listener.partials)
     }

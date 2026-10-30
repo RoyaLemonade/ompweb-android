@@ -103,6 +103,24 @@ fun offeredDictationLanguages(
 }
 
 /**
+ * Which recognizer callback finalized an utterance. A service can report the
+ * same utterance on both paths — `onSegmentResults` and the `final_result`
+ * partial that ends it — so the take has to know the path to add it once
+ * without mistaking a repeated phrase for that re-send.
+ */
+enum class DictationSegmentSource {
+
+    /** API 33+ `RecognitionListener.onSegmentResults`. */
+    SegmentResults,
+
+    /**
+     * The `final_result` partial that finalizes an utterance on services
+     * without a segmented session (Chromium's `SpeechRecognitionImpl` path).
+     */
+    FinalPartial,
+}
+
+/**
  * The live on-device transcript as edits on the composer field.
  *
  * One take is not one utterance. Android's recognizer (the Google on-device
@@ -115,13 +133,21 @@ fun offeredDictationLanguages(
  * pause, talk again, and the first text is gone".
  *
  * [onSegment] therefore commits a finalized utterance to the take, and the
- * hypothesis after it is rendered behind the committed text. A service that
- * reports the whole session so far is fine too: a partial or segment that
- * repeats the committed words is stripped down to its new ones. The final
- * transcript of the session contains everything the take said (Android:
- * "results for the full speech since onReadyForSpeech"), so it replaces the
- * take instead of being appended — a final that merely repeats the last
- * utterance is not duplicated.
+ * hypothesis after it is rendered behind the committed text.
+ *
+ * A commitment is never compared word by word against what the take already
+ * holds: the speaker repeating "ok", "ok weiter" at the next pause is text the
+ * user said, not a re-send of the committed "ok". The only re-send the buffer
+ * drops is the same utterance delivered on both recognizer paths
+ * ([DictationSegmentSource]) — a `final_result` partial for an utterance that
+ * `onSegmentResults` already reported — and it recognizes that by the
+ * delivery path, not by matching words, so a phrase repeated at the next
+ * pause survives.
+ *
+ * The final transcript of the session contains everything the take said
+ * (Android: "results for the full speech since onReadyForSpeech"), so it
+ * replaces the take instead of being appended — a final that merely repeats
+ * the last utterance is not duplicated.
  *
  * The first edit anchors at the caret. The field stays editable while
  * listening: when the user changed it under the live text, the buffer keeps
@@ -142,6 +168,18 @@ class LiveDictationBuffer {
     /** The text this buffer produced last, to notice a user edit. */
     private var applied: String? = null
 
+    /** The words of the last committed utterance, to recognize its re-send. */
+    private var lastSegment: List<String> = emptyList()
+
+    /** The path that delivered [lastSegment] (see [DictationSegmentSource]). */
+    private var lastSegmentSource: DictationSegmentSource? = null
+
+    /**
+     * True while [lastSegment] is still an utterance the recognizer may report
+     * again on the other path; any hypothesis or new utterance ends that.
+     */
+    private var segmentPending = false
+
     val active: Boolean get() = base != null
 
     /** Everything the take produced: the finalized utterances plus the hypothesis. */
@@ -150,17 +188,41 @@ class LiveDictationBuffer {
     /** A new hypothesis of the current utterance; null when the field is unchanged. */
     fun onPartial(current: String, caret: Int, partial: String): TextInsertion? {
         anchor(current, caret)
-        val next = fresh(partial)
+        segmentPending = false
+        val next = partial.trim()
         if (next == live) return null
         live = next
         return show()
     }
 
-    /** An utterance the recognizer finalized at a pause; null when there is nothing to show. */
-    fun onSegment(current: String, caret: Int, segment: String): TextInsertion? {
+    /**
+     * An utterance the recognizer finalized at a pause; null when there is
+     * nothing to show. [source] names the callback that delivered it: the same
+     * utterance arriving on both paths is added once, everything else — a
+     * repeat of earlier words included — is the user's text.
+     */
+    fun onSegment(
+        current: String,
+        caret: Int,
+        segment: String,
+        source: DictationSegmentSource,
+    ): TextInsertion? {
         anchor(current, caret)
-        val next = fresh(segment)
-        if (next.isNotEmpty()) committed = joined(committed, next)
+        val next = segment.trim()
+        if (next.isEmpty()) {
+            segmentPending = false
+        } else {
+            val said = words(next)
+            val resent = segmentPending && source != lastSegmentSource && sameWords(said, lastSegment)
+            if (resent) {
+                segmentPending = false
+            } else {
+                committed = joined(committed, next)
+                lastSegment = said
+                lastSegmentSource = source
+                segmentPending = true
+            }
+        }
         live = ""
         return show()
     }
@@ -201,6 +263,9 @@ class LiveDictationBuffer {
         live = ""
         committed = ""
         applied = null
+        lastSegment = emptyList()
+        lastSegmentSource = null
+        segmentPending = false
     }
 
     /**
@@ -219,13 +284,9 @@ class LiveDictationBuffer {
         anchor = caret.coerceIn(0, current.length)
         live = ""
         committed = ""
-    }
-
-    /** [text] without the words this take already committed. */
-    private fun fresh(text: String): String {
-        val trimmed = text.trim()
-        if (!repeatsCommitted(trimmed)) return trimmed
-        return words(trimmed).drop(words(committed).size).joinToString(" ")
+        lastSegment = emptyList()
+        lastSegmentSource = null
+        segmentPending = false
     }
 
     /** Whether [text] starts with the words the take already committed. */
@@ -235,6 +296,10 @@ class LiveDictationBuffer {
         val said = words(text)
         return said.size >= kept.size && kept.indices.all { sameWord(kept[it], said[it]) }
     }
+
+    /** Whether two utterances are the same words (punctuation and case aside). */
+    private fun sameWords(first: List<String>, second: List<String>): Boolean =
+        first.size == second.size && first.indices.all { sameWord(first[it], second[it]) }
 
     /** Words compare without punctuation and case: a segment may end in a period. */
     private fun sameWord(kept: String, said: String): Boolean =

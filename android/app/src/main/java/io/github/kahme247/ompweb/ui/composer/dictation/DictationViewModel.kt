@@ -11,6 +11,7 @@ import io.github.kahme247.ompweb.domain.DictationMachine
 import io.github.kahme247.ompweb.domain.DictationPhase
 import io.github.kahme247.ompweb.domain.DictationPlayback
 import io.github.kahme247.ompweb.domain.DictationResult
+import io.github.kahme247.ompweb.domain.DictationSegmentSource
 import io.github.kahme247.ompweb.domain.DictationState
 import io.github.kahme247.ompweb.domain.DictationStep
 import io.github.kahme247.ompweb.domain.DictationStore
@@ -430,9 +431,9 @@ class DictationViewModel(
             publish()
         }
 
-        override fun onSegment(text: String) {
+        override fun onSegment(text: String, source: DictationSegmentSource) {
             if (!liveActive) return
-            applyLive(liveBuffer.onSegment(liveFieldText(), liveFieldCaret(), text))
+            applyLive(liveBuffer.onSegment(liveFieldText(), liveFieldCaret(), text, source))
             publish()
         }
 
