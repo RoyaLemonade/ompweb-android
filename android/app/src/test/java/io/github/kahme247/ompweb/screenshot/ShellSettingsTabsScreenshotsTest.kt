@@ -300,6 +300,7 @@ class ShellSettingsTabsScreenshotsTest : ScreenshotTest() {
             setType = { _, _ -> },
             setWhenActive = {},
             setVibrate = {},
+            setCompletedSound = {},
             sendTest = {},
             requestPermission = {},
             openNotificationSettings = {},

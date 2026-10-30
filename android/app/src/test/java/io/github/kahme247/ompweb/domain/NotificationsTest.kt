@@ -67,6 +67,7 @@ class NotificationsTest {
         assertFalse(prefs.modelSwitch)
         assertEquals(NotifyWhenActive.System, prefs.whenActive)
         assertEquals("en", prefs.locale)
+        assertFalse("finished chats are silent by default", prefs.completedSound)
     }
 
     @Test
@@ -102,6 +103,60 @@ class NotificationsTest {
         val raw = prefs.toJson()
         assertEquals(false, (raw["types"] as JsonObject)["completed"]?.let { (it as JsonPrimitive).content }?.toBoolean())
         assertEquals("toast", (raw["whenActive"] as JsonPrimitive).content)
+    }
+
+    @Test
+    fun `the finished-chat sound choice round-trips and defaults to off`() {
+        val loud = NotifyPrefs.DEFAULT.copy(completedSound = true)
+        assertEquals(loud, NotifyPrefs.parse(json(loud.toJson().toString())))
+        assertEquals(
+            "off when the field is absent (older stored prefs)",
+            NotifyPrefs.DEFAULT,
+            NotifyPrefs.parse(
+                json(
+                    """{"enabled":true,"types":{"completed":true,"input":true,"error":true},
+                       "whenActive":"system","locale":"en","vibrate":true}""",
+                ),
+            ),
+        )
+        assertTrue((loud.toJson()["completedSound"] as JsonPrimitive).content.toBoolean())
+    }
+
+    @Test
+    fun `event aliases name the same session under its former id`() {
+        val parsed = requireNotNull(
+            parseNotifyEvent(
+                json(
+                    """{"type":"completed","sessionId":"new","aliases":["old","new",""],
+                       "sessionName":"Moved"}""",
+                ),
+            ),
+        )
+        assertEquals(listOf("old"), parsed.aliases)
+        assertTrue(parsed.concerns("new"))
+        assertTrue(parsed.concerns("old"))
+        assertFalse(parsed.concerns("other"))
+    }
+
+    @Test
+    fun `an event without aliases concerns only its own id`() {
+        val parsed = requireNotNull(parseNotifyEvent(json("""{"type":"completed","sessionId":"s1"}""")))
+        assertTrue(parsed.aliases.isEmpty())
+        assertTrue(parsed.concerns("s1"))
+        assertFalse(parsed.concerns("s2"))
+    }
+
+    @Test
+    fun `one alert per finished-chat burst and project`() {
+        val window = CompletedAlertWindow(windowMillis = 20_000)
+        assertTrue("first finished chat alerts", window.allowsAlert("c:/p1", 1_000))
+        assertFalse("next one in the burst is silent", window.allowsAlert("c:/p1", 5_000))
+        assertFalse("even at the window edge", window.allowsAlert("c:/p1", 21_000))
+        assertTrue("another project has its own burst", window.allowsAlert("c:/p2", 6_000))
+        assertTrue("after the window a new burst alerts", window.allowsAlert("c:/p1", 21_001))
+        assertTrue("a project-less event shares one burst", window.allowsAlert(null, 1_000))
+        assertFalse(window.allowsAlert(null, 2_000))
+        assertTrue("a clock that jumped back starts a new burst", window.allowsAlert("c:/p1", 100))
     }
 
     @Test

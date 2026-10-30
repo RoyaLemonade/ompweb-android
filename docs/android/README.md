@@ -126,11 +126,18 @@ For reliable delivery:
   not require opening the app.
 - **Settings → Notifications** controls which event types notify this device,
   keeps the history, and has **Send test notification**.
-- **Vibrate** (on by default) makes a finished task pulse once, a waiting agent
-  pulse twice, and an error pulse once for long. Sending or answering never
-  vibrates. Silent mode and Do Not Disturb still win.
-- Notifications of sessions from the same project are grouped under one
-  summary such as *3 sessions in ompwebandroid*.
+- A chat you are reading is not announced: while its conversation is on screen,
+  a finished run adds nothing to the shade. A session omp moved to a new file
+  still counts as the open chat under its former id.
+- **Sound/vibration for finished chats** (off by default) keeps a finished chat
+  silent in the shade; a burst of finished chats then alerts at most once.
+  Questions and errors always keep their alert and their vibration patterns.
+- **Vibrate** (on by default) gives a waiting agent two pulses and an error one
+  long pulse; a finished-chat alert (when its switch is on) pulses once, and
+  stays a sound without a pulse when **Vibrate** is off. Sending or answering
+  never vibrates. Silent mode and Do Not Disturb still win.
+- Notifications of two or more chats from the same project are grouped under one
+  summary such as *3 chats finished*; a single chat is its own notification.
 
 ## Updating the app
 

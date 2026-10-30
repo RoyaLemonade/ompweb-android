@@ -8,6 +8,7 @@ import android.content.Context
 import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import io.github.kahme247.ompweb.R
+import io.github.kahme247.ompweb.domain.CompletedAlertWindow
 import io.github.kahme247.ompweb.domain.NotifyEvent
 import io.github.kahme247.ompweb.domain.NotifyProject
 import io.github.kahme247.ompweb.domain.NotifyType
@@ -39,7 +40,15 @@ class AndroidNotifierTest {
     private val manager: NotificationManager = context.getSystemService(NotificationManager::class.java)
 
     private var vibrate = true
-    private val notifier = AndroidNotifier(context, origin = { null }, vibrate = { vibrate })
+    private var completedSound = false
+    private var now = 1_000_000L
+    private val notifier = AndroidNotifier(
+        context,
+        origin = { null },
+        vibrate = { vibrate },
+        completedSound = { completedSound },
+        clock = { now },
+    )
 
     private val project = NotifyProject(key = "c:/work/ompwebandroid", label = "ompwebandroid")
 
@@ -74,6 +83,11 @@ class AndroidNotifierTest {
 
         val completed = manager.getNotificationChannel("completed_v2")
         assertTrue(completed.vibrationPattern.contentEquals(longArrayOf(0, 120)))
+        val silent = requireNotNull(manager.getNotificationChannel("completed_silent")) {
+            "the fully silent twin of a finished chat must exist"
+        }
+        assertFalse("the silent twin never vibrates", silent.shouldVibrate())
+        assertNull("the silent twin never plays a sound", silent.sound)
         val errors = manager.getNotificationChannel("errors_v2")
         assertTrue("an error is one long pulse", errors.vibrationPattern.contentEquals(longArrayOf(0, 600)))
 
@@ -126,11 +140,16 @@ class AndroidNotifierTest {
         val result = posted("s1:input")
         assertEquals("needs_input_quiet", result?.channelId)
         assertEquals(project.key, result?.group)
-        assertEquals(
-            "the summary still counts the answered session",
-            "1 session in ompwebandroid",
-            summary()?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
-        )
+        // One chat is one notification: a summary would only repeat it.
+        assertNull("a single chat has no summary", summary())
+    }
+
+    @Test
+    fun `a result after a finished chat stays silent`() {
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s1"), project))
+        assertTrue(notifier.postResult("s1:completed", "Reply sent", "completed", "Sent to the agent", "s1"))
+
+        assertEquals("completed_silent", posted("s1:completed")?.channelId)
     }
 
     @Test
@@ -143,8 +162,11 @@ class AndroidNotifierTest {
     @Test
     fun `cancelling the last child removes the summary`() {
         assertTrue(notifier.post(input("s1").copy(requestId = "req-1"), project))
+        assertTrue(notifier.post(input("s2").copy(requestId = "req-2"), project))
         assertNotNull(summary())
         notifier.cancelIfMatches("s1:input", requestId = "req-1")
+        assertNull("one remaining chat needs no summary", summary())
+        notifier.cancelIfMatches("s2:input", requestId = "req-2")
         assertNull("an empty group must not leave an orphan summary", summary())
     }
 
@@ -170,7 +192,7 @@ class AndroidNotifierTest {
         // because the active list can still show it while the receiver runs.
         manager.cancel("s1:input", 1)
         NotificationActionReceiver.dismiss(first, notifier)
-        assertEquals("1 session in ompwebandroid", summaryTitle())
+        assertNull("one remaining chat needs no summary", summary())
 
         manager.cancel("s2:input", 1)
         NotificationActionReceiver.dismiss(shadowOf(secondDelete).savedIntent, notifier)
@@ -187,7 +209,7 @@ class AndroidNotifierTest {
         assertEquals("2 sessions in ompwebandroid", summaryTitle())
 
         notifier.refreshGroupSummaries()
-        assertEquals("1 session in ompwebandroid", summaryTitle())
+        assertNull("a summary of one chat is dropped", summary())
     }
 
     @Test
@@ -235,6 +257,94 @@ class AndroidNotifierTest {
         assertNull("the completed notification is gone", posted("s1:completed"))
         assertNull("the input notification is gone", posted("s1:input"))
         assertNotNull("another session keeps its notification", posted("s2:completed"))
-        assertEquals("the summary drops the closed session", "1 session in ompwebandroid", summaryTitle())
+        assertNull("one remaining chat needs no summary", summary())
+    }
+
+    @Test
+    fun `opening a chat closes every type and the answered result`() {
+        for (type in NotifyType.entries) {
+            assertTrue(notifier.post(NotifyEvent(type = type, sessionId = "s1"), project))
+        }
+        assertTrue(notifier.postResult("s1:error", "Reply sent", "errors", "Sent to the agent", "s1"))
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s2"), project))
+
+        notifier.cancelSession("s1")
+
+        for (type in NotifyType.entries) {
+            assertNull("${type.wire} is gone", posted("s1:${type.wire}"))
+        }
+        assertNotNull("another session keeps its notification", posted("s2:completed"))
+    }
+
+    @Test
+    fun `a finished chat is silent by default`() {
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s1"), project))
+
+        val completed = requireNotNull(posted("s1:completed"))
+        assertEquals("completed_silent", completed.channelId)
+        val channel = requireNotNull(manager.getNotificationChannel("completed_silent"))
+        assertFalse("no vibration", channel.shouldVibrate())
+        assertNull("no sound", channel.sound)
+        assertEquals("still visible in the shade", NotificationManager.IMPORTANCE_DEFAULT, manager.getNotificationChannel("completed_silent").importance)
+    }
+
+    @Test
+    fun `questions and errors stay loud`() {
+        assertTrue(notifier.post(input("s1"), project))
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Error, sessionId = "s2"), project))
+
+        assertEquals("needs_input_v2", posted("s1:input")?.channelId)
+        assertEquals("errors_v2", posted("s2:error")?.channelId)
+    }
+
+    @Test
+    fun `the finished-chat setting alerts once per burst and project`() {
+        completedSound = true
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s1"), project))
+        assertEquals("completed_v2", posted("s1:completed")?.channelId)
+
+        // Same burst: the second chat of the project is posted silently.
+        now += 5_000
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s2"), project))
+        assertEquals("completed_silent", posted("s2:completed")?.channelId)
+
+        // A later completion opens a new burst and alerts again.
+        now += CompletedAlertWindow.DEFAULT_WINDOW_MILLIS + 1
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s3"), project))
+        assertEquals("completed_v2", posted("s3:completed")?.channelId)
+    }
+
+    @Test
+    fun `the vibrate switch quiets the finished-chat alert but keeps its sound`() {
+        completedSound = true
+        vibrate = false
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s1"), project))
+
+        // "Sound/vibration for finished chats" decides whether a finished chat
+        // alerts; the global "Vibrate" switch still decides whether that alert
+        // pulses — the row promises "one short pulse when a task finishes".
+        val posted = requireNotNull(posted("s1:completed"))
+        assertEquals("completed_quiet", posted.channelId)
+        assertFalse(
+            "vibration off: the quiet twin must not pulse",
+            requireNotNull(manager.getNotificationChannel("completed_quiet")).shouldVibrate(),
+        )
+    }
+
+    @Test
+    fun `a burst of finished chats collapses into one summary with their names`() {
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s1", sessionName = "Fix build"), project))
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s2", sessionName = "Write tests"), project))
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s3", sessionName = "Review"), project))
+
+        val summary = requireNotNull(summary())
+        assertEquals("3 chats finished", summary.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+        assertEquals(
+            "newest first, like the inbox lines",
+            "Review, Write tests, Fix build",
+            summary.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+        )
+        assertEquals("completed_silent", summary.channelId)
+        assertEquals(project.label, summary.extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString())
     }
 }

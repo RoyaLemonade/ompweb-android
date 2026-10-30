@@ -16,11 +16,18 @@
 
     <!-- The quiet twin of an event channel: the "Vibrate" setting switched off. -->
     <string name="notify_channel_quiet_suffix"> (no vibration)</string>
+    <!-- The fully silent twin of a finished chat: sound and vibration off. -->
+    <string name="notify_channel_silent_suffix"> (silent)</string>
 
     <!-- Group summary: one Android group per project (project root). -->
     <plurals name="notify_group_summary">
         <item quantity="one">%1$d session in %2$s</item>
         <item quantity="other">%1$d sessions in %2$s</item>
+    </plurals>
+    <!-- Group summary of finished chats only: the burst of a project. -->
+    <plurals name="notify_group_finished">
+        <item quantity="one">%1$d chat finished</item>
+        <item quantity="other">%1$d chats finished</item>
     </plurals>
 
     <!-- Service status notification. -->

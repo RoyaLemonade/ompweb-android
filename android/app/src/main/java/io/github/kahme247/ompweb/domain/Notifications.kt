@@ -97,6 +97,14 @@ val NotifyChannel.vibratingId: String get() = if (supportsVibration) "${id}_v2" 
 
 val NotifyChannel.quietId: String get() = if (supportsVibration) "${id}_quiet" else id
 
+/**
+ * The fully silent twin (`_silent`): no sound and no vibration. The quiet twin
+ * still plays the channel's sound (the "Vibrate" off case), so a type that must
+ * never alert needs its own id. Only completed creates one; the id resolves for
+ * every channel so a stored id maps back from the system's list.
+ */
+val NotifyChannel.silentId: String get() = if (supportsVibration) "${id}_silent" else id
+
 /** The channel id one post uses: the vibrating twin or its quiet twin. */
 fun NotifyChannel.androidChannelId(vibrate: Boolean): String = when {
     !supportsVibration -> id
@@ -106,12 +114,13 @@ fun NotifyChannel.androidChannelId(vibrate: Boolean): String = when {
 
 /**
  * Maps a stored channel id back to its event channel: the logical id, the
- * `_v2`/`_quiet` twins and the pre-1.0.2 legacy ids all name the same channel.
+ * `_v2`/`_quiet`/`_silent` twins and the pre-1.0.2 legacy ids all name the same
+ * channel.
  */
 fun notifyChannelFor(channelId: String?): NotifyChannel? {
     val value = channelId?.takeIf { it.isNotBlank() } ?: return null
     return NotifyChannel.entries.firstOrNull {
-        value == it.id || value == it.vibratingId || value == it.quietId
+        value == it.id || value == it.vibratingId || value == it.quietId || value == it.silentId
     }
 }
 
@@ -162,6 +171,12 @@ data class NotifyPrefs(
     val whenActive: NotifyWhenActive = NotifyWhenActive.System,
     val locale: String = "en",
     val vibrate: Boolean = true,
+    /**
+     * "Sound/vibration for finished chats": completed alerts are silent by
+     * default, because a finished chat needs no attention — the transcript has
+     * it. The server ignores this device-local field.
+     */
+    val completedSound: Boolean = false,
 ) {
     fun isEnabled(type: NotifyType): Boolean = when (type) {
         NotifyType.Completed -> completed
@@ -191,6 +206,7 @@ data class NotifyPrefs(
         put("whenActive", whenActive.wire)
         put("locale", locale)
         put("vibrate", vibrate)
+        put("completedSound", completedSound)
     }
 
     companion object {
@@ -214,6 +230,7 @@ data class NotifyPrefs(
                     ?.takeIf { LOCALE_PATTERN.matches(it) }
                     ?: DEFAULT.locale,
                 vibrate = root.bool("vibrate") ?: DEFAULT.vibrate,
+                completedSound = root.bool("completedSound") ?: DEFAULT.completedSound,
             )
         }
     }
@@ -246,12 +263,21 @@ data class NotifyEvent(
     val to: String? = null,
     val requestId: String? = null,
     val dialog: NotifyDialog? = null,
+    /**
+     * Ids the session was filed under before omp moved it (`event.aliases`).
+     * The server's `isOnScreen` treats a tab showing any of them as viewing
+     * the session, so the app's own guard must do the same.
+     */
+    val aliases: List<String> = emptyList(),
 ) {
     /** `<sessionId>:<type>` replaces an older notification of the same session/kind. */
     val tag: String get() = "$sessionId:${type.wire}"
 
     /** The id an answer must echo; the event carries it even without a dialog. */
     val answerRequestId: String? get() = requestId ?: dialog?.requestId
+
+    /** True when `sessionId` is this session under its current or a former id. */
+    fun concerns(sessionId: String): Boolean = this.sessionId == sessionId || sessionId in aliases
 }
 
 /** `notification-dismiss` frame of the `notifications` channel. */
@@ -311,6 +337,34 @@ fun noticeRoute(kind: String?): NoticeRoute = when (kind) {
  */
 fun noticeRouteAfterPost(route: NoticeRoute, posted: Boolean): NoticeRoute =
     if (route == NoticeRoute.System && !posted) NoticeRoute.InApp else route
+
+/**
+ * At most one alert per finished-chat burst and project: the first completed
+ * event of a project alerts (when "Sound/vibration for finished chats" is on),
+ * every further completed inside [windowMillis] is posted silently. The burst
+ * itself is still coalesced into the project's group summary, so a burst of
+ * completions produces one shade entry whose text lists the chats.
+ *
+ * Kept free of Android types and of a system clock so the rule is unit-tested.
+ */
+class CompletedAlertWindow(private val windowMillis: Long = DEFAULT_WINDOW_MILLIS) {
+    private val lock = Any()
+    private val openedAt = mutableMapOf<String, Long>()
+
+    /** True for the first completed of [projectKey] in the current window. */
+    fun allowsAlert(projectKey: String?, now: Long): Boolean = synchronized(lock) {
+        val key = projectKey.orEmpty()
+        val opened = openedAt[key]
+        // A clock that jumped back must not silence a fresh run forever.
+        if (opened != null && now >= opened && now - opened <= windowMillis) return@synchronized false
+        openedAt[key] = now
+        true
+    }
+
+    companion object {
+        const val DEFAULT_WINDOW_MILLIS = 20_000L
+    }
+}
 
 /**
  * An in-app delivery shown in the shell (web toast). It carries the session
@@ -607,6 +661,9 @@ fun parseNotifyEvent(value: JsonElement?): NotifyEvent? {
         to = root.string("to"),
         requestId = root.string("requestId")?.takeIf { it.isNotEmpty() },
         dialog = dialog,
+        aliases = root.stringList("aliases")
+            .filter { it.isNotBlank() && it != sessionId }
+            .distinct(),
     )
 }
 

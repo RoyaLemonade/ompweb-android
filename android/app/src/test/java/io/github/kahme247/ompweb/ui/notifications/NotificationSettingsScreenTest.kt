@@ -43,12 +43,14 @@ class NotificationSettingsScreenTest {
 
     private var sendTests = 0
     private val vibrateChanges = mutableListOf<Boolean>()
+    private val completedSoundChanges = mutableListOf<Boolean>()
 
     private val actions = NotificationSettingsActions(
         setEnabled = {},
         setType = { _, _ -> },
         setWhenActive = {},
         setVibrate = { vibrateChanges += it },
+        setCompletedSound = { completedSoundChanges += it },
         sendTest = { sendTests += 1 },
         requestPermission = {},
         openNotificationSettings = {},
@@ -118,5 +120,23 @@ class NotificationSettingsScreenTest {
         render(NotificationSettingsUiState(enabled = false, vibrate = true))
 
         vibrateSwitch().performScrollTo().assertIsOn().assertIsNotEnabled()
+    }
+
+    private fun completedSoundSwitch() = composeRule.onNodeWithTag("notifications-completed-sound-switch")
+
+    @Test
+    fun finishedChatsAreQuietByDefaultAndTheSwitchReportsTheChange() {
+        render(NotificationSettingsUiState(enabled = true))
+
+        completedSoundSwitch().performScrollTo().assertIsOff().performClick()
+
+        assertEquals(listOf(true), completedSoundChanges)
+    }
+
+    @Test
+    fun theCompletedSoundSwitchShowsAStoredChoiceAndFollowsTheMasterSwitch() {
+        render(NotificationSettingsUiState(enabled = false, completedSound = true))
+
+        completedSoundSwitch().performScrollTo().assertIsOn().assertIsNotEnabled()
     }
 }

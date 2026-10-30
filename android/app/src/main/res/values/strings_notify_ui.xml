@@ -56,6 +56,8 @@
     <string name="notify_ui_feedback_title">Feedback</string>
     <string name="notify_ui_vibrate">Vibrate</string>
     <string name="notify_ui_vibrate_desc">One short pulse when a task finishes, a double pulse when the agent needs an answer, one long pulse on errors. Never when you send. Follows silent mode and Do Not Disturb.</string>
+    <string name="notify_ui_completed_sound">Sound/vibration for finished chats</string>
+    <string name="notify_ui_completed_sound_desc">Off by default: a finished chat appears quietly in the shade, because its answer is already in the transcript. Questions and errors always stay loud. A burst of finished chats still alerts only once.</string>
     <string name="notify_ui_type_completed">Task finished</string>
     <string name="notify_ui_type_completed_desc">A prompt and the background work it started are done. Subagents never notify.</string>
     <string name="notify_ui_type_input">Waiting for input</string>

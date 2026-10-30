@@ -96,6 +96,7 @@ class NotificationCenter(
         context.applicationContext,
         origin = { settings.originNow()?.origin },
         vibrate = { settings.snapshot.value.notifyPrefs.vibrate },
+        completedSound = { settings.snapshot.value.notifyPrefs.completedSound },
     ),
     /** The pulse for in-app notices; system notifications vibrate via their channel. */
     private val haptics: InAppHaptics = AndroidHaptics(
@@ -323,7 +324,7 @@ class NotificationCenter(
         // the chat still on screen included), so the server keeps a fresh view
         // of this device instead of a report that may be one interval old and
         // lets that entry expire by its own TTL.
-        reportPresence(force = true)
+        reportPresence()
         mux.setPersistent(false)
     }
 
@@ -357,13 +358,14 @@ class NotificationCenter(
             visibleSession = normalized
             before != normalized
         }
-        if (!changed) return
         // Opening a chat closes what was already posted for it (web: the
-        // notification is read where the conversation is). A chat selected
-        // while the app is in the background keeps its notification until the
-        // user actually returns to it.
+        // notification is read where the conversation is). This runs even when
+        // the id did not change: a frame delivered between the report and the
+        // composition must not survive the chat becoming visible, and the call
+        // is idempotent. A chat selected while the app is in the background
+        // keeps its notification until the user actually returns to it.
         if (normalized != null && isAppForeground()) clearSessionArtifacts(normalized)
-        reportPresence()
+        if (changed) reportPresence()
     }
 
     /**
@@ -371,9 +373,18 @@ class NotificationCenter(
      * that chat's pane on screen (phone and two-pane). The server suppresses
      * such events through the presence report; the local check covers the
      * window between a state change and that report reaching it.
+     *
+     * [event] may name the session under a former id (omp moves a conversation
+     * to a new file and keeps the old ids as aliases). The server's `isOnScreen`
+     * treats a tab showing any of them as viewing the session, so the local
+     * guard must compare the same set — otherwise a moved chat on screen still
+     * notifies.
      */
-    private fun isSessionOnScreen(sessionId: String): Boolean =
-        synchronized(presenceLock) { appForeground && visibleSession == sessionId }
+    private fun isSessionOnScreen(event: NotifyEvent): Boolean =
+        synchronized(presenceLock) {
+            val shown = visibleSession
+            appForeground && shown != null && event.concerns(shown)
+        }
 
     /** Drops the shade notifications and in-app notices of one session. */
     private fun clearSessionArtifacts(sessionId: String) {
@@ -381,32 +392,41 @@ class NotificationCenter(
         _notices.update { current -> current.filterNot { it.sessionId == sessionId } }
     }
 
-    private fun reportPresence(force: Boolean = false) {
-        if (!force && !_runtimeActive.value) return
+    /**
+     * Sends the current window state. Not tied to the service runtime: the
+     * shell is visible and showing a chat before the service finishes its
+     * activation (and after it was asked to stop), and the server must know
+     * either way — a report that is dropped here leaves it routing `os`
+     * frames for the chat the user is reading.
+     */
+    private fun reportPresence() {
+        // A device that turned notifications off is not a notification client;
+        // reporting it as "viewing" would suppress the user's other devices.
+        if (!settings.snapshot.value.notifyPrefs.enabled) return
         val report = presenceReport() ?: return
         scope.launch { api.reportPresence(report) }
     }
 
     /**
      * The report for the current window state, or null before an identity
-     * exists. [PresenceReport.seq] only grows, so the server never drops a
-     * newer visibility change because reports overtook each other.
+     * exists. The visibility snapshot and the sequence number are taken under
+     * one lock: a report may never carry an older visibility with a newer
+     * [PresenceReport.seq], because the server keeps the highest seq and would
+     * then believe this device is not viewing the chat.
      */
     internal fun presenceReport(): PresenceReport? {
         val identity = settings.snapshot.value.identityOrNull() ?: return null
         val visibility = synchronized(presenceLock) {
-            resolvePresence(appForeground, visibleSession)
-        }
-        val seq = synchronized(presenceLock) {
+            val current = resolvePresence(appForeground, visibleSession)
             presenceSeq = nextPresenceSeq(presenceSeq, System.currentTimeMillis())
-            presenceSeq
+            current to presenceSeq
         }
         return PresenceReport(
             clientId = identity.clientId,
             deviceId = identity.deviceId,
-            visible = visibility.visible,
-            sessionId = visibility.sessionId,
-            seq = seq,
+            visible = visibility.first.visible,
+            sessionId = visibility.first.sessionId,
+            seq = visibility.second,
         )
     }
 
@@ -419,6 +439,9 @@ class NotificationCenter(
     fun setWhenActive(whenActive: NotifyWhenActive) = updatePrefs { it.copy(whenActive = whenActive) }
 
     fun setVibrate(enabled: Boolean) = updatePrefs { it.copy(vibrate = enabled) }
+
+    /** "Sound/vibration for finished chats"; off makes completed alerts silent. */
+    fun setCompletedSound(enabled: Boolean) = updatePrefs { it.copy(completedSound = enabled) }
 
     private fun updatePrefs(transform: (NotifyPrefs) -> NotifyPrefs) {
         scope.launch {
@@ -568,8 +591,11 @@ class NotificationCenter(
                 // says the chat is on screen; a report can still be in flight
                 // when the frame arrives. Enforce the rule locally as well:
                 // nothing is posted, shown or vibrated for the chat being read.
-                if (isSessionOnScreen(event.sessionId)) {
+                // The event may carry the session under a former id, so both
+                // ids are cleared and compared.
+                if (isSessionOnScreen(event)) {
                     clearSessionArtifacts(event.sessionId)
+                    event.aliases.forEach(::clearSessionArtifacts)
                     return
                 }
                 // `whenActive:"toast"` stays in the app; a system post the app

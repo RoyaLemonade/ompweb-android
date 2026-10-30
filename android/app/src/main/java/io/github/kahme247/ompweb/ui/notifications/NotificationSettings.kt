@@ -77,6 +77,8 @@ data class NotificationSettingsUiState(
     val whenActive: NotificationWhenActive = NotificationWhenActive.TOAST,
     /** The user's vibration choice: on by default, independent of the type list. */
     val vibrate: Boolean = true,
+    /** "Sound/vibration for finished chats": off by default, completed stays silent. */
+    val completedSound: Boolean = false,
     val permission: NotificationPermissionState = NotificationPermissionState.NOT_ASKED,
     val battery: NotificationBatteryState = NotificationBatteryState.EXEMPT,
     val connection: NotificationConnectionState = NotificationConnectionState.DISABLED,
@@ -100,6 +102,7 @@ data class NotificationSettingsActions(
     val setType: (NotificationTypeToggle, Boolean) -> Unit,
     val setWhenActive: (NotificationWhenActive) -> Unit,
     val setVibrate: (Boolean) -> Unit,
+    val setCompletedSound: (Boolean) -> Unit,
     val sendTest: () -> Unit,
     val requestPermission: () -> Unit,
     val openNotificationSettings: () -> Unit,
@@ -244,6 +247,20 @@ fun NotificationSettingsScreen(
                         onCheckedChange = actions.setVibrate,
                         enabled = controlsEnabled,
                         modifier = Modifier.testTag("notifications-vibrate-switch"),
+                    )
+                },
+            )
+            SettingsRow(
+                title = stringResource(R.string.notify_ui_completed_sound),
+                description = stringResource(R.string.notify_ui_completed_sound_desc),
+                enabled = controlsEnabled,
+                highlighted = highlight == "notifications-completed-sound",
+                trailing = {
+                    Switch(
+                        checked = state.completedSound,
+                        onCheckedChange = actions.setCompletedSound,
+                        enabled = controlsEnabled,
+                        modifier = Modifier.testTag("notifications-completed-sound-switch"),
                     )
                 },
             )

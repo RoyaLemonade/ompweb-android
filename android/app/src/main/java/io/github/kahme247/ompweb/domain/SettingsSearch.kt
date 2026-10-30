@@ -360,6 +360,14 @@ val LOCAL_SETTINGS_SEARCH_ENTRIES: List<SettingsSearchEntry> = listOf(
         SettingsScope.UI,
     ),
     SettingsSearchEntry(
+        "notifications-completed-sound",
+        SettingsTab.NOTIFICATIONS,
+        SECTION_NOTIFICATIONS,
+        "Sound/vibration for finished chats",
+        "Off by default: a finished chat appears quietly, questions and errors stay loud. A burst of finished chats alerts only once and is summarized per project.",
+        SettingsScope.UI,
+    ),
+    SettingsSearchEntry(
         "notifications-when-active",
         SettingsTab.NOTIFICATIONS,
         SECTION_NOTIFICATIONS,

@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import io.github.kahme247.ompweb.MainActivity
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.domain.NOTIFICATION_TITLE_MAX
+import io.github.kahme247.ompweb.domain.CompletedAlertWindow
 import io.github.kahme247.ompweb.domain.NotifyChannel
 import io.github.kahme247.ompweb.domain.NotifyEvent
 import io.github.kahme247.ompweb.domain.NotifyProject
@@ -32,6 +33,7 @@ import io.github.kahme247.ompweb.domain.notifyChannelFor
 import io.github.kahme247.ompweb.domain.quietId
 import io.github.kahme247.ompweb.domain.renderNotification
 import io.github.kahme247.ompweb.domain.renderTestNotification
+import io.github.kahme247.ompweb.domain.silentId
 import io.github.kahme247.ompweb.domain.supportsVibration
 import io.github.kahme247.ompweb.domain.vibrationPattern
 import io.github.kahme247.ompweb.domain.vibratingId
@@ -47,27 +49,45 @@ import java.util.concurrent.atomic.AtomicInteger
  * the origin they were minted for ([origin]).
  *
  * Event notifications join the Android group of their session's project and a
- * per-project summary is refreshed after every change ("3 sessions in
- * ompwebandroid"). A grouped child also carries a delete intent, and every
- * foreground visit rebuilds all summaries, so tapping or swiping a child away
- * cannot leave a stale count/title behind. Vibration lives in the channels
- * (immutable after creation, so the vibrating `_v2` and quiet `_quiet` twins
- * exist side by side); [vibrate] picks the twin on every post.
+ * per-project summary is refreshed after every change. A summary is only posted
+ * for two or more chats of the group ("3 chats finished: …"): a group of one is
+ * just that notification, and repeating it in a summary would look like a
+ * second notification for the same chat. A grouped child also carries a delete
+ * intent, and every foreground visit rebuilds all summaries, so tapping or
+ * swiping a child away cannot leave a stale count/title behind.
+ *
+ * Vibration and sound live in the channels (immutable after creation, so the
+ * vibrating `_v2`, quiet `_quiet` and fully silent `_silent` twins exist side
+ * by side); [vibrate] picks the vibrating or quiet twin, [completedSound]
+ * decides whether a finished chat alerts at all, and [CompletedAlertWindow]
+ * limits a burst of finished chats to one alert.
  */
 class AndroidNotifier(
     private val context: Context,
     private val origin: () -> String?,
     /** The current "Vibrate" setting; channels cannot be edited after creation. */
     private val vibrate: () -> Boolean = { true },
+    /** "Sound/vibration for finished chats"; off by default, so completed is silent. */
+    private val completedSound: () -> Boolean = { false },
+    /** Time base of the finished-chat burst window (injected for the tests). */
+    private val clock: () -> Long = { System.currentTimeMillis() },
 ) : Notifier {
+
+    /** One alert per project per finished-chat burst (see [CompletedAlertWindow]). */
+    private val completedAlerts = CompletedAlertWindow()
 
     override fun ensureChannels() {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         // A user who blocked a legacy channel keeps that decision on the new
-        // twins; `createNotificationChannels` never raises an importance.
+        // twins; `createNotificationChannels` never raises an importance. The
+        // family counts as blocked when any of its ids is blocked, so a silent
+        // twin cannot resurrect a type the user turned off.
         val blocked = NotifyChannel.entries
             .filter { it.supportsVibration }
-            .filter { manager.getNotificationChannel(it.id)?.importance == NotificationManager.IMPORTANCE_NONE }
+            .filter { channel ->
+                listOf(channel.id, channel.vibratingId, channel.quietId, channel.silentId)
+                    .any { manager.getNotificationChannel(it)?.importance == NotificationManager.IMPORTANCE_NONE }
+            }
             .toSet()
         manager.createNotificationChannels(
             buildList {
@@ -97,6 +117,27 @@ class AndroidNotifier(
                         NotificationManager.IMPORTANCE_DEFAULT,
                         blocked,
                     ),
+                )
+                // "Sound/vibration for finished chats" is off by default, and
+                // a channel's sound cannot be removed after creation: the
+                // `_quiet` twin only dropped the vibration, so completed needs
+                // a third, fully silent twin. Its name says why it is silent.
+                add(
+                    channel(
+                        NotifyChannel.Completed.silentId,
+                        R.string.notify_channel_completed,
+                        R.string.notify_channel_completed_description,
+                        if (NotifyChannel.Completed in blocked) {
+                            NotificationManager.IMPORTANCE_NONE
+                        } else {
+                            NotificationManager.IMPORTANCE_DEFAULT
+                        },
+                    ).apply {
+                        this.name = context.getString(R.string.notify_channel_completed) +
+                            context.getString(R.string.notify_channel_silent_suffix)
+                        setSound(null, null)
+                        enableVibration(false)
+                    },
                 )
                 add(
                     channel(
@@ -193,7 +234,7 @@ class AndroidNotifier(
         ensureChannels()
         val rendered = renderNotification(event)
         val plan = notificationActions(event, context.getString(R.string.notify_reply_label))
-        val builder = baseBuilder(rendered, rendered.channel.androidChannelId(vibrate()))
+        val builder = baseBuilder(rendered, channelIdFor(rendered.channel, project))
             .setContentIntent(openSessionIntent(event.sessionId, rendered.tag))
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setWhen(System.currentTimeMillis())
@@ -319,8 +360,9 @@ class AndroidNotifier(
      * request cannot close the result.
      *
      * The result never vibrates (answering/sending is not an event), so it
-     * moves to the channel's quiet twin. It keeps the group of the replaced
-     * notification, otherwise the project's summary would shrink by one.
+     * moves to the channel's quiet twin — and, after a finished chat, to the
+     * silent twin, which never plays a sound either. It keeps the group of the
+     * replaced notification, otherwise the project's summary would shrink by one.
      */
     @SuppressLint("MissingPermission", "NotificationPermission")
     override fun postResult(tag: String, title: String, channelId: String, text: String, sessionId: String): Boolean {
@@ -330,7 +372,10 @@ class AndroidNotifier(
         val previous = activeNotification(tag)
         val group = previous?.notification?.group
         val label = previous?.notification?.extras?.getString(NotificationIntents.EXTRA_PROJECT_LABEL)
-        val builder = NotificationCompat.Builder(context, channel.quietId)
+        val builder = NotificationCompat.Builder(
+            context,
+            if (channel == NotifyChannel.Completed) channel.silentId else channel.quietId,
+        )
             .setSmallIcon(iconFor(channel))
             .setColor(colorFor(channel))
             .setContentTitle(title)
@@ -483,10 +528,34 @@ class AndroidNotifier(
     }
 
     /**
+     * The channel one post belongs on. A finished chat is silent unless the
+     * user enabled "Sound/vibration for finished chats", and even then only the
+     * first completion of a burst alerts — later ones reuse the silent twin, so
+     * a burst of finished chats produces one alert instead of many. Within that
+     * alert the "Vibrate" setting still decides between the vibrating twin and
+     * the quiet one, exactly as it does for questions and errors: turning
+     * vibration off must not buzz on a finished task.
+     */
+    private fun channelIdFor(channel: NotifyChannel, project: NotifyProject?): String =
+        if (channel == NotifyChannel.Completed) {
+            if (completedSound() && completedAlerts.allowsAlert(project?.key, clock())) {
+                channel.androidChannelId(vibrate())
+            } else {
+                channel.silentId
+            }
+        } else {
+            channel.androidChannelId(vibrate())
+        }
+
+    /**
      * Rebuilds the group's summary from the notifications that exist right
      * now, plus the child just posted ([added]) or minus the one just closed
      * ([removedTag]) — the system's own list lags one binder call behind.
-     * A group without children loses its summary.
+     *
+     * A group without children loses its summary, and so does one that stands
+     * for a single chat: a summary that only repeats one notification is a
+     * second entry for the same chat. Two or more finished chats of one project
+     * collapse into it ("3 chats finished: …").
      */
     private fun refreshGroupSummary(
         groupKey: String,
@@ -499,25 +568,34 @@ class AndroidNotifier(
         val shown = active ?: readActiveNotifications() ?: return
         val children = groupChildren(shown, groupKey, added, removedTag)
         val manager = NotificationManagerCompat.from(context)
-        if (children.isEmpty()) {
+        val sessions = children.mapTo(HashSet()) { it.sessionId.ifBlank { it.tag } }
+        if (sessions.size < 2) {
             runCatching { manager.cancel(groupSummaryTag(groupKey), GROUP_SUMMARY_ID) }
             return
         }
         val label = children.firstNotNullOfOrNull { it.label.takeIf(String::isNotBlank) }
             ?: groupKey.substringAfterLast('/').takeIf { it.isNotBlank() }
             ?: context.getString(R.string.notify_status_title)
-        val sessions = children.mapTo(HashSet()) { it.sessionId.ifBlank { it.tag } }
         val titles = children.map { it.title }.filter { it.isNotBlank() }
         val summaryChannel = children.map { it.channel }.maxByOrNull { it.summaryRank } ?: NotifyChannel.Completed
+        val finishedOnly = children.all { it.channel == NotifyChannel.Completed }
         val style = NotificationCompat.InboxStyle()
         titles.take(MAX_SUMMARY_LINES).forEach(style::addLine)
-        val summary = NotificationCompat.Builder(context, summaryChannel.androidChannelId(vibrate = false))
+        val summary = NotificationCompat.Builder(
+            context,
+            if (finishedOnly) NotifyChannel.Completed.silentId else summaryChannel.androidChannelId(vibrate = false),
+        )
             .setSmallIcon(R.drawable.ic_notify_summary)
             .setColor(ContextCompat.getColor(context, R.color.notify_accent_summary))
             .setContentTitle(
-                context.resources.getQuantityString(R.plurals.notify_group_summary, sessions.size, sessions.size, label),
+                if (finishedOnly) {
+                    context.resources.getQuantityString(R.plurals.notify_group_finished, sessions.size, sessions.size)
+                } else {
+                    context.resources.getQuantityString(R.plurals.notify_group_summary, sessions.size, sessions.size, label)
+                },
             )
-            .setContentText(titles.firstOrNull() ?: label)
+            .setContentText(titles.joinToString(", ").ifBlank { label })
+            .setSubText(label)
             .setStyle(style)
             .setContentIntent(openSessionIntent(null, groupSummaryTag(groupKey)))
             .setGroup(groupKey)

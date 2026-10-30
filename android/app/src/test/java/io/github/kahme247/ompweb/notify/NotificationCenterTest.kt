@@ -25,7 +25,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -92,6 +94,7 @@ class NotificationCenterTest {
 
     private class FakeApi : NotificationsApi {
         val projects = mutableMapOf<String, NotifyProject>()
+        val presence = mutableListOf<PresenceReport>()
 
         override suspend fun putDevice(deviceId: String, prefs: NotifyPrefs, origin: ServerAddress?) = Unit
 
@@ -99,7 +102,9 @@ class NotificationCenterTest {
 
         override suspend fun sessionProjects(): Map<String, NotifyProject> = projects
 
-        override suspend fun reportPresence(report: PresenceReport) = Unit
+        override suspend fun reportPresence(report: PresenceReport) {
+            presence += report
+        }
 
         override suspend fun sendTest(deviceId: String): TestPushResult = TestPushResult.Sent
 
@@ -153,16 +158,25 @@ class NotificationCenterTest {
     /** [NotificationCenter.deliverFrame] suspends on the project lookup. */
     private fun deliver(frame: JsonObject) = runBlocking { center.deliverFrame(frame) }
 
-    private fun notificationFrame(kind: String, type: String = "completed", requestId: String? = null): JsonObject =
+    private fun notificationFrame(
+        kind: String,
+        type: String = "completed",
+        requestId: String? = null,
+        sessionId: String = "s1",
+        aliases: List<String> = emptyList(),
+    ): JsonObject =
         buildJsonObject {
             put("type", "notification")
             put("kind", kind)
             putJsonObject("event") {
                 put("type", type)
-                put("sessionId", "s1")
+                put("sessionId", sessionId)
                 put("sessionName", "Fix build")
                 put("detail", "Approve the patch?")
                 if (requestId != null) put("requestId", requestId)
+                if (aliases.isNotEmpty()) {
+                    put("aliases", JsonArray(aliases.map(::JsonPrimitive)))
+                }
             }
         }
 
@@ -337,5 +351,76 @@ class NotificationCenterTest {
         assertEquals("backgrounding leaves the shade alone", 0, notifier.summaryRefreshes)
         center.setAppForeground(true)
         assertEquals(1, notifier.summaryRefreshes)
+    }
+
+    @Test
+    fun `the visible chat is reported before the service runtime runs`() = runBlocking {
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+
+        val last = requireNotNull(api.presence.lastOrNull()) {
+            "a visible chat must reach the server even while the service is still activating " +
+                "(identity=${settings.snapshot.value.notifyDeviceId}/${settings.snapshot.value.notifyClientId}, " +
+                "enabled=${settings.snapshot.value.notifyPrefs.enabled}, loaded=${settings.snapshot.value.loaded})"
+        }
+        assertTrue("visible while the chat is on screen", last.visible)
+        assertEquals("s1", last.sessionId)
+        assertTrue("the sequence grows", api.presence.size >= 2)
+    }
+
+    @Test
+    fun `a moved session on screen is still the chat being read`() {
+        center.setAppForeground(true)
+        center.setVisibleSession("old-id")
+
+        // omp moved the conversation: the event names the new id and keeps the
+        // old one as an alias, exactly like the server's `isOnScreen`.
+        deliver(notificationFrame(kind = "os", sessionId = "new-id", aliases = listOf("old-id")))
+
+        assertTrue("no notification for the chat on screen", notifier.posted.isEmpty())
+        assertTrue(center.notices.value.isEmpty())
+    }
+
+    @Test
+    fun `a moved session still notifies another chat`() {
+        center.setAppForeground(true)
+        center.setVisibleSession("old-id")
+
+        deliver(notificationFrame(kind = "os", sessionId = "new-id", aliases = listOf("somewhere-else")))
+
+        assertEquals(listOf("new-id:completed"), notifier.posted.map { it.tag })
+    }
+
+    @Test
+    fun `a repeated visible-session call still closes the chat's notification`() {
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+        assertEquals(listOf("s1"), notifier.cancelledSessions)
+
+        // The id did not change (the composition re-reported it): a frame that
+        // slipped in between must not survive as a shade notification.
+        center.setVisibleSession("s1")
+        assertEquals(listOf("s1", "s1"), notifier.cancelledSessions)
+    }
+
+    @Test
+    fun `a disabled device sends no presence reports`() = runBlocking {
+        settings.ensureNotifyIdentity()
+        val original = settings.snapshot.value.notifyPrefs
+        // The prefs are the device's, not the test's: `setNotifyPrefs` writes
+        // them through to the store this class shares, so "off" must be undone
+        // or every later test reports as a disabled device.
+        settings.setNotifyPrefs(original.copy(enabled = false))
+        try {
+            // The snapshot write is immediate (the suspend part is the store
+            // write), so the report guard sees the new value right away.
+            val before = api.presence.size
+            center.setAppForeground(true)
+            center.setVisibleSession("s1")
+            assertEquals("notifications off: not a notification client", before, api.presence.size)
+        } finally {
+            settings.setNotifyPrefs(original)
+        }
     }
 }
