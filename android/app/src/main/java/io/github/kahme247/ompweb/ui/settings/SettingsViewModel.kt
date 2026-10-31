@@ -300,12 +300,15 @@ class SettingsViewModel(
                 val appResult = app.await()
                 val ompResult = omp.await()
                 answered = appResult.isSuccess || ompResult.isSuccess
+                // Stamp the window before publishing: once the banner state
+                // changes, the throttle must already reflect this answer (the
+                // tests, and a resume racing the publish, rely on that order).
+                recordNoticeCheck(generation, answered)
                 if (generation == serverGeneration) {
                     appResult.getOrNull()?.let(::publishAppUpdate)
                     ompResult.getOrNull()?.let(::publishOmpUpdate)
                 }
             }
-            recordNoticeCheck(generation, answered)
         }
     }
 

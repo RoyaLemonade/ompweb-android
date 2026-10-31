@@ -385,9 +385,13 @@ class SettingsViewModelTest {
         }
 
         viewModel.checkForUpdateNotices()
+        // The banner implies the answer was recorded: the success stamp is set
+        // before publishing, so advancing the clock here cannot race the
+        // completion and shift the throttle window (CI ran into exactly that).
         waitFor("the start check") {
             paths.count { it.startsWith("/api/app-update") } == 1 &&
-                paths.count { it.startsWith("/api/omp-update") } == 1
+                paths.count { it.startsWith("/api/omp-update") } == 1 &&
+                viewModel.updateNotice.value != null
         }
 
         nowMillis += UPDATE_NOTICE_CHECK_INTERVAL_MILLIS - 1
