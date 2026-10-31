@@ -94,6 +94,11 @@ Filters never change how a project is unfolded: the chevron still collapses
 and expands its matching sessions, and the five-row **Show more** limit keeps
 counting the rows the filters left in the tree.
 
+A search term above the list is a result set, not a filter: every project with
+a match opens (even one you had collapsed) and shows all of its matches, so a
+match beyond the five-row limit is never hidden. Your expand/collapse choices
+are kept untouched and apply again as soon as the search field is cleared.
+
 ## Writing in the chat
 
 - **Snippets (templates)** — save recurring wording under **Settings →

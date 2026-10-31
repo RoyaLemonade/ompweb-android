@@ -1168,7 +1168,12 @@ internal fun SessionListPane(
     val unreadIds = remember(state.unreadIds, notificationUnreadSessionIds, awaitingInputSessionIds) {
         sidebarUnreadSessionIds(state.unreadIds, notificationUnreadSessionIds, awaitingInputSessionIds)
     }
-    val filterActive = state.searchQuery.isNotBlank() || sessionFilter.active
+    // A query is a result set: every project with a match is opened and shows
+    // all of its matches. The chips alone narrow the rows but leave the
+    // chevron and the five-root cap in charge (the user reported that a filter
+    // used to hold every project open).
+    val searchActive = state.searchQuery.isNotBlank()
+    val filterActive = searchActive || sessionFilter.active
     val display = remember(
         state.sessions,
         state.runningIds,
@@ -1664,11 +1669,15 @@ internal fun SessionListPane(
                                     val defaultKey = comparableProjectPath(
                                         state.activeCwd ?: orderedProjects.firstOrNull()?.path.orEmpty(),
                                     )
-                                    // Filters narrow the rows, never the
-                                    // expansion: an active chip or search term
-                                    // must not override the chevron.
+                                    // A chip narrows the rows, never the
+                                    // expansion: the chevron stays in charge.
+                                    // A search query is a result set, so it
+                                    // opens every project with a match; the
+                                    // user's stored state is untouched and
+                                    // applies again when the query is cleared.
                                     val expanded =
-                                        state.expandedProjects?.contains(expandedKey) == true ||
+                                        searchActive ||
+                                            state.expandedProjects?.contains(expandedKey) == true ||
                                             (state.expandedProjects == null && expandedKey == defaultKey)
                                     ProjectBlock(
                                         project = project,
@@ -1677,6 +1686,7 @@ internal fun SessionListPane(
                                         activity = activity,
                                         expanded = expanded,
                                         filterActive = filterActive,
+                                        searchActive = searchActive,
                                         now = now,
                                         runningIds = state.runningIds,
                                         unreadIds = unreadIds,

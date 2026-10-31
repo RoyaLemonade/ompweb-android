@@ -106,6 +106,8 @@ internal fun ProjectBlock(
     activity: ProjectActivity,
     expanded: Boolean,
     filterActive: Boolean,
+    /** A non-blank search query: show every matching root, no cap. */
+    searchActive: Boolean,
     now: Instant,
     runningIds: Set<String>,
     unreadIds: Set<String>,
@@ -145,9 +147,13 @@ internal fun ProjectBlock(
     val childIds = remember(allProjectSessions) {
         allProjectSessions.mapNotNull { it.parentSessionId }.toSet()
     }
-    // The cap counts matching rows: a filter narrows the tree, it does not
-    // lift the five-root limit (the web behaves the same).
-    val shownRoots = if (showAllRoots) roots else roots.take(MAX_PROJECT_SESSIONS)
+    // The cap counts matching rows. A chip narrows the tree and keeps the
+    // five-root limit; a search query is a result set, so it shows every
+    // match (the web zeroes `hiddenCount` while its filters are active).
+    // `showAllRoots` is the user's own "Show more"; it survives the query and
+    // applies again when the field is cleared.
+    val rootsCapped = !searchActive && roots.size > MAX_PROJECT_SESSIONS
+    val shownRoots = if (showAllRoots || !rootsCapped) roots else roots.take(MAX_PROJECT_SESSIONS)
 
     Column(
         modifier = Modifier
@@ -284,7 +290,7 @@ internal fun ProjectBlock(
                         onCopyId = onCopyId,
                     )
                 }
-                if (roots.size > MAX_PROJECT_SESSIONS) {
+                if (rootsCapped) {
                     TextButton(
                         onClick = { showAllRoots = !showAllRoots },
                         modifier = Modifier.padding(start = 24.dp, bottom = 4.dp),

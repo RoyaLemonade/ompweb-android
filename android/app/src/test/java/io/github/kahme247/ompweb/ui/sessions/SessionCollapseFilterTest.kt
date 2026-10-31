@@ -35,7 +35,9 @@ import java.time.Instant
  * toggle away. A project header collapses and expands exactly as it does
  * without chips, and the five-root cap with "Show more" still applies to the
  * matching rows (the user reported that `Age: Today` left every project
- * permanently open).
+ * permanently open). A search query is a result set instead: it opens every
+ * project with a match, shows all matches uncapped, and leaves the stored
+ * expand/collapse state alone for when the field is cleared.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -67,8 +69,89 @@ class SessionCollapseFilterTest {
     }
 
     @Test
-    fun `search leaves the project toggle alone`() {
-        assertCollapseSurvives(state(searchQuery = "Chat one"))
+    fun `a search opens a collapsed project and shows every match`() {
+        val sessions = (1..7).map { index ->
+            SessionSummary(
+                id = "s$index",
+                cwd = PROJECT,
+                name = "Session-$index",
+                // Equal timestamps keep the given order (stable sort), so the
+                // cap would hide exactly the last two rows.
+                modified = NOW,
+                messageCount = 1,
+            )
+        }
+        val state = mutableStateOf(
+            state(sessions = sessions, searchQuery = "Session", expandedProjects = emptySet()),
+        )
+        setContent(state)
+
+        // The project was collapsed, yet every match is on screen: a query is
+        // a result set, not a tree the user has to unfold by hand.
+        composeRule.onNodeWithText("Session-1").assertIsDisplayed()
+        composeRule.onNodeWithText("Session-6").assertIsDisplayed()
+        composeRule.onNodeWithText("Session-7").assertIsDisplayed()
+        // No cap and no "Show more" action while matching.
+        composeRule.onNodeWithText(context.getString(R.string.session_show_more, 2))
+            .assertDoesNotExist()
+        assertEquals(
+            "the query must not touch the stored expansion",
+            emptySet<String>(),
+            state.value.expandedProjects,
+        )
+    }
+
+    @Test
+    fun `clearing the query restores the previous collapsed state`() {
+        val state = mutableStateOf(
+            state(searchQuery = "Chat one", expandedProjects = emptySet()),
+        )
+        setContent(state)
+
+        composeRule.onNodeWithText("Chat one").assertIsDisplayed()
+        assertEquals(
+            "showing a match must not rewrite the stored expansion",
+            emptySet<String>(),
+            state.value.expandedProjects,
+        )
+
+        state.value = state.value.copy(searchQuery = "")
+        composeRule.waitForIdle()
+
+        // The user collapsed this project before searching; the cleared field
+        // hands the tree back exactly as they left it.
+        composeRule.onNodeWithText("Chat one").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription(context.getString(R.string.project_expand))
+            .assertIsDisplayed()
+        assertEquals(emptySet<String>(), state.value.expandedProjects)
+    }
+
+    @Test
+    fun `clearing the query restores the five-root cap`() {
+        val sessions = (1..7).map { index ->
+            SessionSummary(
+                id = "s$index",
+                cwd = PROJECT,
+                name = "Session-$index",
+                modified = NOW,
+                messageCount = 1,
+            )
+        }
+        val state = mutableStateOf(
+            state(sessions = sessions, searchQuery = "Session"),
+        )
+        setContent(state)
+
+        composeRule.onNodeWithText("Session-7").assertIsDisplayed()
+
+        state.value = state.value.copy(searchQuery = "")
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Session-5").assertIsDisplayed()
+        composeRule.onNodeWithText("Session-6").assertDoesNotExist()
+        composeRule.onNodeWithText("Session-7").assertDoesNotExist()
+        composeRule.onNodeWithText(context.getString(R.string.session_show_more, 2))
+            .assertIsDisplayed()
     }
 
     @Test
@@ -199,6 +282,7 @@ class SessionCollapseFilterTest {
         unreadOnly: Boolean = false,
         age: SessionAgeFilter = SessionAgeFilter.All,
         searchQuery: String = "",
+        expandedProjects: Set<String>? = setOf(PROJECT),
     ) = SessionsUiState(
         loading = false,
         projectsLoaded = true,
@@ -211,7 +295,7 @@ class SessionCollapseFilterTest {
         unreadOnly = unreadOnly,
         ageFilter = age,
         searchQuery = searchQuery,
-        expandedProjects = setOf(PROJECT),
+        expandedProjects = expandedProjects,
         activeCwd = PROJECT,
         home = "/work",
     )
