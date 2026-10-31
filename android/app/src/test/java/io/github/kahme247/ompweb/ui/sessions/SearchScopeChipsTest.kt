@@ -46,8 +46,9 @@ class SearchScopeChipsTest {
 
         composeRule.onNodeWithText(sessionsChip).assertIsDisplayed()
         composeRule.onNodeWithText(messagesChip).assertDoesNotExist()
-        // The title filter and its running-only chip stay, so the row is not empty.
-        composeRule.onNodeWithText(context.getString(R.string.home_running_only)).assertIsDisplayed()
+        // The filter bar below the search row keeps its Running chip, so the
+        // scope row is not the only way to narrow the list.
+        composeRule.onNodeWithText(context.getString(R.string.sessions_filter_running)).assertIsDisplayed()
     }
 
     @Test

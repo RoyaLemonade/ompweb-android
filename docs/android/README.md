@@ -69,6 +69,26 @@ not build yourself.
 The app remembers the address and the theme. **Sign out** forgets the cookie
 and returns to the password screen; **Change server** forgets the address too.
 
+## Finding sessions
+
+The three chips above the session list narrow a long workspace list; they
+combine, so **Running** + **Unread** + **2 days** shows only chats that are all
+three.
+
+- **Running** — chats the server currently drives (or another omp process
+  owns).
+- **Unread** — a session that wants attention: the unread dot the sidebar
+  already showed, an unread entry in the notification list, or a blocking
+  input dialog that waits for an answer.
+- **Age** — `All`, `Today` (local calendar day), `2 days` or `7 days`, based on
+  the session's last activity. The menu sits behind the chip.
+
+Pinned sessions and projects ignore the filters: a pin is your explicit
+choice, so their shortcut rows stay at the top. Projects whose sessions all
+fail the filters collapse while a chip is active; the row at the bottom says
+how many sessions are hidden and offers **Clear filters**. The chosen chips
+are remembered per server and are forgotten on sign-out, like the pins.
+
 ## Writing in the chat
 
 - **Snippets (templates)** — save recurring wording under **Settings →

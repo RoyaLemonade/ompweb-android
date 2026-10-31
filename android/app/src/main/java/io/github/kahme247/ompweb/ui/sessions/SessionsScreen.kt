@@ -10,6 +10,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Search
@@ -97,6 +99,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -119,6 +122,8 @@ import io.github.kahme247.ompweb.domain.TextAttachmentBudget
 import io.github.kahme247.ompweb.domain.mergeImageAttachments
 import io.github.kahme247.ompweb.domain.selectTextAttachments
 import io.github.kahme247.ompweb.domain.ProjectActivity
+import io.github.kahme247.ompweb.domain.SessionAgeFilter
+import io.github.kahme247.ompweb.domain.SessionListFilter
 import io.github.kahme247.ompweb.domain.ProjectOrderHold
 import io.github.kahme247.ompweb.domain.applyProjectOrder
 import io.github.kahme247.ompweb.domain.orderProjectsByActivity
@@ -128,9 +133,11 @@ import io.github.kahme247.ompweb.domain.coldStartRestoreStep
 import io.github.kahme247.ompweb.domain.comparableProjectPath
 import io.github.kahme247.ompweb.domain.explorerWorkspace
 import io.github.kahme247.ompweb.domain.groupSessionsByProject
+import io.github.kahme247.ompweb.domain.hiddenByFiltersCount
 import io.github.kahme247.ompweb.domain.holdsProjectOrder
 import io.github.kahme247.ompweb.domain.projectActivityCounts
 import io.github.kahme247.ompweb.domain.sessionWorktreeRemoved
+import io.github.kahme247.ompweb.domain.sidebarUnreadSessionIds
 import io.github.kahme247.ompweb.domain.sessionsShowsRefreshError
 import io.github.kahme247.ompweb.domain.sessionsShowsUpdating
 import io.github.kahme247.ompweb.domain.visibleChatSession
@@ -185,6 +192,10 @@ fun SessionsScreen(
     overlayOpen: Boolean = false,
     restoreSessionId: String? = null,
     restoreNewSessionCwd: String? = null,
+    /** Sessions with an unread notification-history entry (the Unread chip). */
+    notificationUnreadSessionIds: Set<String> = emptySet(),
+    /** Sessions whose blocking input dialog waits for an answer. */
+    awaitingInputSessionIds: Set<String> = emptySet(),
     /**
      * The shell's update announcement (web: a toast below the chrome). It is
      * rendered *inside* the visible pane's content, below that pane's top bar:
@@ -693,6 +704,11 @@ fun SessionsScreen(
                         onLoadMoreMessageResults = viewModel::loadMoreMessageResults,
                         onRetryMessageSearch = viewModel::retryMessageSearch,
                         onRunningOnlyToggle = { viewModel.setRunningOnly(!state.runningOnly) },
+                        onUnreadOnlyToggle = { viewModel.setUnreadOnly(!state.unreadOnly) },
+                        onAgeFilterChange = viewModel::setAgeFilter,
+                        onClearFilters = viewModel::clearFilters,
+                        notificationUnreadSessionIds = notificationUnreadSessionIds,
+                        awaitingInputSessionIds = awaitingInputSessionIds,
                         onNewSession = { openNewSession() },
                         onAddProject = { pickerPurpose = PickerPurpose.AddProject },
                         onOpenFiles = { openFiles() },
@@ -1092,6 +1108,15 @@ internal fun SessionListPane(
     onLoadMoreMessageResults: () -> Unit,
     onRetryMessageSearch: () -> Unit,
     onRunningOnlyToggle: () -> Unit,
+    /** The Unread chip; the sources arrive as [notificationUnreadSessionIds] and [awaitingInputSessionIds]. */
+    onUnreadOnlyToggle: () -> Unit = {},
+    onAgeFilterChange: (SessionAgeFilter) -> Unit = {},
+    /** "Clear filters" on the hidden-count row and the filtered empty state. */
+    onClearFilters: () -> Unit = {},
+    /** Sessions with an unread notification-history entry. */
+    notificationUnreadSessionIds: Set<String> = emptySet(),
+    /** Sessions whose blocking input dialog waits for an answer. */
+    awaitingInputSessionIds: Set<String> = emptySet(),
     onNewSession: () -> Unit,
     onAddProject: () -> Unit,
     /** Phase 9: opens the Files panel (Explorer/Git/Worktrees). */
@@ -1135,7 +1160,15 @@ internal fun SessionListPane(
         }
     }
 
-    val filterActive = state.searchQuery.isNotBlank() || state.runningOnly
+    val sessionFilter = state.sessionFilter
+    // The Unread chip means "this session wants attention": the sidebar's
+    // unread marker, an unread notification-history entry, or a blocking
+    // input dialog that waits for an answer. Rows and project counts use the
+    // same union, so the badge the user taps matches the filter.
+    val unreadIds = remember(state.unreadIds, notificationUnreadSessionIds, awaitingInputSessionIds) {
+        sidebarUnreadSessionIds(state.unreadIds, notificationUnreadSessionIds, awaitingInputSessionIds)
+    }
+    val filterActive = state.searchQuery.isNotBlank() || sessionFilter.active
     val display = remember(
         state.sessions,
         state.runningIds,
@@ -1165,8 +1198,8 @@ internal fun SessionListPane(
     // session: the ones this server drives and the ones another omp process
     // owns. Unread badges and notifications stay on `runningIds` alone.
     val liveIds = remember(state.runningIds, elsewhereIds) { state.runningIds + elsewhereIds.toList() }
-    val activities = remember(displaySessions, liveIds, state.unreadIds, state.exited) {
-        projectActivityCounts(displaySessions, liveIds, state.unreadIds, state.exited.keys)
+    val activities = remember(displaySessions, liveIds, unreadIds, state.exited) {
+        projectActivityCounts(displaySessions, liveIds, unreadIds, state.exited.keys)
     }
     // Activity order: pinned projects first, then running ones, then the
     // newest session. Because that order changes with every refresh, the
@@ -1201,6 +1234,11 @@ internal fun SessionListPane(
         liveIds,
         state.searchQuery,
         state.runningOnly,
+        state.unreadOnly,
+        state.ageFilter,
+        unreadIds,
+        now,
+        state.pinnedProjectPaths,
     ) {
         visibleSessionEntries(
             projects = orderedProjects,
@@ -1208,17 +1246,34 @@ internal fun SessionListPane(
             runningOnly = state.runningOnly,
             runningIds = liveIds,
             query = state.searchQuery,
+            unreadOnly = state.unreadOnly,
+            unreadIds = unreadIds,
+            age = state.ageFilter,
+            now = now,
+            pinnedProjectPaths = state.pinnedProjectPaths,
         )
     }
     val visibleProjects = remember(visibleEntries) { visibleEntries.map { it.first } }
     val visibleSessions = remember(visibleEntries) { visibleEntries.flatMap { it.second } }
     val grouped = remember(visibleEntries) { visibleEntries.associate { it.first.path to it.second } }
+    // How many rows the chips hide; a pinned row is shown above regardless,
+    // so it is not counted.
+    val hiddenByFilters = remember(allGrouped, sessionFilter, liveIds, unreadIds, state.pinnedIds, now) {
+        hiddenByFiltersCount(
+            sessionsByProject = allGrouped,
+            filter = sessionFilter,
+            runningIds = liveIds,
+            unreadIds = unreadIds,
+            pinnedSessionIds = state.pinnedIds,
+            now = now,
+        )
+    }
     // Pinned rows are a shortcut at the top; they stay in their project tree
-    // too (removing them there would reparent a pinned fork's children). A
-    // filter still applies, so a running-only or title search does not show an
-    // unrelated pin.
-    val pinnedSessions = remember(displaySessions, visibleSessions, state.pinnedIds, filterActive) {
-        (if (filterActive) visibleSessions else displaySessions).filter { it.id in state.pinnedIds }
+    // too (removing them there would reparent a pinned fork's children).
+    // Pins are the user's explicit choice, so no filter hides them: a pinned
+    // session always keeps its row at the top.
+    val pinnedSessions = remember(displaySessions, state.pinnedIds) {
+        displaySessions.filter { it.id in state.pinnedIds }
     }
     val listState = rememberLazyListState()
     val listInteraction = remember { SessionListInteraction() }
@@ -1372,18 +1427,6 @@ internal fun SessionListPane(
                                     },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.home_running_only)) },
-                                    leadingIcon = {
-                                        if (state.runningOnly) {
-                                            Icon(Icons.Filled.Check, contentDescription = null)
-                                        }
-                                    },
-                                    onClick = {
-                                        menuOpen = false
-                                        onRunningOnlyToggle()
-                                    },
-                                )
-                                DropdownMenuItem(
                                     text = { Text(stringResource(R.string.home_quick_switcher)) },
                                     onClick = {
                                         menuOpen = false
@@ -1480,6 +1523,12 @@ internal fun SessionListPane(
                 if (state.projectsError != null) {
                     ProjectsErrorBanner(onRetry = onRefresh)
                 }
+                SessionFilterBar(
+                    filter = sessionFilter,
+                    onRunningToggle = onRunningOnlyToggle,
+                    onUnreadToggle = onUnreadOnlyToggle,
+                    onAgeSelected = onAgeFilterChange,
+                )
                 if (state.searchOpen) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1502,13 +1551,6 @@ internal fun SessionListPane(
                                 label = { Text(stringResource(R.string.sessions_search_scope_messages)) },
                             )
                             Spacer(Modifier.width(8.dp))
-                        }
-                        if (state.searchMode == SessionSearchMode.Sessions) {
-                            FilterChip(
-                                selected = state.runningOnly,
-                                onClick = onRunningOnlyToggle,
-                                label = { Text(stringResource(R.string.home_running_only)) },
-                            )
                         }
                         Spacer(Modifier.weight(1f))
                         TextButton(onClick = onSearchClose) {
@@ -1550,12 +1592,8 @@ internal fun SessionListPane(
                             onOpenWorkspaces = onAddProject,
                         )
     
-                        filterActive && visibleProjects.isEmpty() && pinnedSessions.isEmpty() -> Text(
-                            text = stringResource(R.string.home_no_matches),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.textDim,
-                            modifier = Modifier.padding(24.dp),
-                        )
+                        filterActive && visibleProjects.isEmpty() && pinnedSessions.isEmpty() ->
+                            FilteredEmptyState(onClearFilters = onClearFilters)
     
                         else -> CompositionLocalProvider(LocalSessionListInteraction provides listInteraction) {
                             LazyColumn(
@@ -1601,7 +1639,7 @@ internal fun SessionListPane(
                                             sessions = pinnedSessions,
                                             now = now,
                                             runningIds = state.runningIds,
-                                            unreadIds = state.unreadIds,
+                                            unreadIds = unreadIds,
                                             exitedIds = state.exited.keys,
                                             elsewhereIds = elsewhereIds,
                                             selectedSessionId = state.selectedSessionId,
@@ -1638,7 +1676,7 @@ internal fun SessionListPane(
                                         filterActive = filterActive,
                                         now = now,
                                         runningIds = state.runningIds,
-                                        unreadIds = state.unreadIds,
+                                        unreadIds = unreadIds,
                                         exitedIds = state.exited.keys,
                                         elsewhereIds = elsewhereIds,
                                         selectedSessionId = state.selectedSessionId,
@@ -1667,6 +1705,11 @@ internal fun SessionListPane(
                                     )
                                     HorizontalDivider(color = colors.border)
                                 }
+                                if (hiddenByFilters > 0) {
+                                    item(key = "hidden-by-filters") {
+                                        HiddenByFiltersRow(count = hiddenByFilters, onClear = onClearFilters)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1685,6 +1728,134 @@ internal fun SessionListPane(
             onSelect = onThemeSelected,
             onDismiss = { themePickerOpen = false },
         )
+    }
+}
+
+/**
+ * The list's filter bar: three compact chips in one row. The row scrolls
+ * horizontally so a narrow phone (or 200 % font) never clips the age chip, and
+ * it stays visible while the search panel is open because the filters combine
+ * with the query.
+ */
+@Composable
+private fun SessionFilterBar(
+    filter: SessionListFilter,
+    onRunningToggle: () -> Unit,
+    onUnreadToggle: () -> Unit,
+    onAgeSelected: (SessionAgeFilter) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var ageMenuOpen by remember { mutableStateOf(false) }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .testTag(SESSION_FILTER_BAR_TAG),
+    ) {
+        FilterChip(
+            selected = filter.runningOnly,
+            onClick = onRunningToggle,
+            label = { Text(stringResource(R.string.sessions_filter_running)) },
+            modifier = Modifier.testTag(SESSION_FILTER_RUNNING_TAG),
+        )
+        FilterChip(
+            selected = filter.unreadOnly,
+            onClick = onUnreadToggle,
+            label = { Text(stringResource(R.string.sessions_filter_unread)) },
+            modifier = Modifier.testTag(SESSION_FILTER_UNREAD_TAG),
+        )
+        Box {
+            FilterChip(
+                selected = filter.age != SessionAgeFilter.All,
+                onClick = { ageMenuOpen = true },
+                label = {
+                    Text(
+                        stringResource(
+                            R.string.sessions_filter_age_chip,
+                            stringResource(filter.age.labelRes()),
+                        ),
+                    )
+                },
+                trailingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+                modifier = Modifier.testTag(SESSION_FILTER_AGE_TAG),
+            )
+            OmpDropdownMenu(expanded = ageMenuOpen, onDismissRequest = { ageMenuOpen = false }) {
+                SessionAgeFilter.entries.forEach { age ->
+                    DropdownMenuItem(
+                        text = { Text(stringResource(age.labelRes())) },
+                        leadingIcon = {
+                            if (age == filter.age) {
+                                Icon(Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            ageMenuOpen = false
+                            onAgeSelected(age)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Localized label of one age preset (the enum itself stays UI-free). */
+private fun SessionAgeFilter.labelRes(): Int = when (this) {
+    SessionAgeFilter.All -> R.string.sessions_filter_age_all
+    SessionAgeFilter.Today -> R.string.sessions_filter_age_today
+    SessionAgeFilter.TwoDays -> R.string.sessions_filter_age_two_days
+    SessionAgeFilter.SevenDays -> R.string.sessions_filter_age_seven_days
+}
+
+/** Nothing survives the filters: say so and offer the one-tap way back. */
+@Composable
+private fun FilteredEmptyState(onClearFilters: () -> Unit) {
+    val colors = LocalOmpColors.current
+    Column(modifier = Modifier.padding(24.dp)) {
+        Text(
+            text = stringResource(R.string.home_no_matches),
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.textDim,
+        )
+        TextButton(onClick = onClearFilters) {
+            Text(stringResource(R.string.sessions_filter_clear))
+        }
+    }
+}
+
+/**
+ * The list's tail while chips are active: how many sessions they hide, and a
+ * clear action. It sits at the bottom so the list itself starts with the
+ * sessions the user asked for.
+ */
+@Composable
+private fun HiddenByFiltersRow(count: Int, onClear: () -> Unit) {
+    val colors = LocalOmpColors.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 10.dp)
+            .testTag(SESSION_FILTER_HIDDEN_TAG),
+    ) {
+        Text(
+            text = pluralStringResource(R.plurals.sessions_filter_hidden, count, count),
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.textDim,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onClear) {
+            Text(stringResource(R.string.sessions_filter_clear))
+        }
     }
 }
 
@@ -2196,6 +2367,13 @@ private fun MessageHitRow(
 
 private const val MAX_IMPORT_BYTES = 8 * 1024 * 1024
 private const val MAX_CLIPBOARD_CHARS = 100_000
+
+/** Test tags of the filter bar, its chips and the hidden-count row. */
+internal const val SESSION_FILTER_BAR_TAG = "session-filter-bar"
+internal const val SESSION_FILTER_RUNNING_TAG = "session-filter-running"
+internal const val SESSION_FILTER_UNREAD_TAG = "session-filter-unread"
+internal const val SESSION_FILTER_AGE_TAG = "session-filter-age"
+internal const val SESSION_FILTER_HIDDEN_TAG = "session-filter-hidden"
 
 /**
  * Below this pane width the list's eight top-bar actions do not fit: eight

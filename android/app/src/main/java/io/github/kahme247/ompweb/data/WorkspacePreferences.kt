@@ -1,5 +1,6 @@
 package io.github.kahme247.ompweb.data
 
+import io.github.kahme247.ompweb.domain.SessionListFilter
 import io.github.kahme247.ompweb.domain.ToolPreset
 import kotlinx.coroutines.flow.StateFlow
 
@@ -22,6 +23,12 @@ interface WorkspacePreferences {
      * first); an empty list removes that origin's entry.
      */
     suspend fun setPinnedProjects(origin: String, paths: List<String>)
+
+    /**
+     * The sessions list's filter chips for one server origin. The default
+     * filter removes that origin's entry, so a fresh origin starts unfiltered.
+     */
+    suspend fun setSessionFilters(origin: String, filters: SessionListFilter)
 
     suspend fun setToolPreset(preset: ToolPreset)
 

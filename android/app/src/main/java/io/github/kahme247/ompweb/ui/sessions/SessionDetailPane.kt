@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.domain.displayCwd
+import io.github.kahme247.ompweb.domain.parseSessionTimestamp
 import io.github.kahme247.ompweb.domain.projectPathLabel
 import io.github.kahme247.ompweb.net.SessionInfo
 import io.github.kahme247.ompweb.net.SessionSummary
@@ -452,10 +453,10 @@ private fun SessionDetailsDialog(
                         detail?.thinkingLevel?.takeIf { it.isNotBlank() }?.let { level ->
                             DetailField(label = stringResource(R.string.detail_thinking), value = level)
                         }
-                        parseTimestamp(info.created)?.let { created ->
+                        parseSessionTimestamp(info.created)?.let { created ->
                             DetailField(label = stringResource(R.string.detail_created), value = absoluteDate(created))
                         }
-                        parseTimestamp(info.modified)?.let { modified ->
+                        parseSessionTimestamp(info.modified)?.let { modified ->
                             DetailField(label = stringResource(R.string.detail_updated), value = absoluteDate(modified))
                         }
                         info.parentSessionId?.let { parentId ->

@@ -249,7 +249,9 @@ internal fun ProjectBlock(
         if (expanded) {
             if (visibleSessions.isEmpty()) {
                 Text(
-                    text = stringResource(R.string.project_empty),
+                    text = stringResource(
+                        if (filterActive) R.string.project_no_filter_matches else R.string.project_empty,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.textDim,
                     modifier = Modifier.padding(start = 34.dp, top = 2.dp, bottom = 10.dp),

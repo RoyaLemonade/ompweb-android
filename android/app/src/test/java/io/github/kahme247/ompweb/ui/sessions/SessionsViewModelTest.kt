@@ -3,6 +3,8 @@ package io.github.kahme247.ompweb.ui.sessions
 import androidx.lifecycle.ViewModelStore
 import io.github.kahme247.ompweb.data.SettingsSnapshot
 import io.github.kahme247.ompweb.data.WorkspacePreferences
+import io.github.kahme247.ompweb.domain.SessionAgeFilter
+import io.github.kahme247.ompweb.domain.SessionListFilter
 import io.github.kahme247.ompweb.domain.ToolPreset
 import io.github.kahme247.ompweb.domain.sessionsShowsRefreshError
 import io.github.kahme247.ompweb.domain.sessionsShowsUpdating
@@ -1072,6 +1074,57 @@ class SessionsViewModelTest {
     }
 
     @Test
+    fun `filter chips are restored for this origin and persisted per origin`() {
+        val preferences = FakePreferences(
+            SettingsSnapshot(
+                loaded = true,
+                sessionFiltersByOrigin = mapOf(
+                    address.origin to SessionListFilter(unreadOnly = true, age = SessionAgeFilter.TwoDays),
+                    "http://other.invalid:1" to SessionListFilter(runningOnly = true),
+                ),
+            ),
+        )
+        sessionResponses.add(
+            sessions("""{"sessions":[{"id":"s1","cwd":"/work/a"}],"runningSessionIds":[]}"""),
+        )
+        recreate(preferences)
+        viewModel.setActive(true)
+        waitFor("this origin's filters seeded") {
+            viewModel.state.value.unreadOnly && viewModel.state.value.ageFilter == SessionAgeFilter.TwoDays
+        }
+        assertEquals(
+            "another origin's Running chip must not leak",
+            false,
+            viewModel.state.value.runningOnly,
+        )
+
+        viewModel.setAgeFilter(SessionAgeFilter.SevenDays)
+        waitFor("age filter persisted") { preferences.filterWrites.isNotEmpty() }
+        assertEquals(address.origin, preferences.filterWrites.last().first)
+        assertEquals(
+            SessionListFilter(unreadOnly = true, age = SessionAgeFilter.SevenDays),
+            preferences.filterWrites.last().second,
+        )
+
+        viewModel.setRunningOnly(true)
+        waitFor("running chip persisted") {
+            preferences.current.sessionFiltersByOrigin[address.origin]?.runningOnly == true
+        }
+
+        // Clear filters turns every chip off and removes this origin's record;
+        // the other installation's record stays.
+        viewModel.clearFilters()
+        assertEquals(SessionListFilter(), viewModel.state.value.sessionFilter)
+        waitFor("default filter clears this origin's entry") {
+            preferences.current.sessionFiltersByOrigin[address.origin] == null
+        }
+        assertTrue(
+            "another installation's filters survive",
+            preferences.current.sessionFiltersByOrigin.containsKey("http://other.invalid:1"),
+        )
+    }
+
+    @Test
     fun `hiding a project forgets its pin`() {
         val preferences = FakePreferences(
             SettingsSnapshot(
@@ -1562,6 +1615,20 @@ class SessionsViewModelTest {
         /** Every project-pin write, in order; origin scoping is asserted. */
         val projectPinWrites =
             java.util.Collections.synchronizedList(mutableListOf<Pair<String, List<String>>>())
+
+        override suspend fun setSessionFilters(origin: String, filters: SessionListFilter) {
+            filterWrites += origin to filters
+            state.update {
+                it.copy(
+                    sessionFiltersByOrigin = it.sessionFiltersByOrigin.toMutableMap().apply {
+                        if (filters.isDefault) remove(origin) else put(origin, filters)
+                    },
+                )
+            }
+        }
+
+        /** Every filter write, in order; the persistence test asserts origin scoping. */
+        val filterWrites = java.util.Collections.synchronizedList(mutableListOf<Pair<String, SessionListFilter>>())
 
         override suspend fun setToolPreset(preset: ToolPreset) {
             state.update { it.copy(toolPreset = preset.wireName) }

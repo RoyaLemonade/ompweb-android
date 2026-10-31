@@ -75,7 +75,6 @@
     <string name="home_title">Workspace</string>
     <string name="home_search">Search sessions</string>
     <string name="home_search_close">Close search</string>
-    <string name="home_running_only">Running only</string>
     <!-- Cache-first: cached rows are shown before the running badges are known. -->
     <string name="sessions_list_updating">Updating…</string>
     <string name="home_quick_switcher">Go to session</string>
@@ -99,6 +98,7 @@
     <string name="project_hide_body">The project disappears from this app. Its sessions stay on the PC.</string>
     <string name="project_hide_confirm">Hide</string>
     <string name="project_empty">No sessions in this project</string>
+    <string name="project_no_filter_matches">No session matches the filters</string>
     <string name="project_label_hint">Project name</string>
     <string name="session_show_more">Show more (%1$d)</string>
     <string name="session_show_less">Show less</string>

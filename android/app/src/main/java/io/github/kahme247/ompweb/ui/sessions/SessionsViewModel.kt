@@ -6,6 +6,8 @@ import io.github.kahme247.ompweb.data.SessionListCache
 import io.github.kahme247.ompweb.data.WorkspacePreferences
 import io.github.kahme247.ompweb.domain.NavigationEntry
 import io.github.kahme247.ompweb.domain.NavigationHistory
+import io.github.kahme247.ompweb.domain.SessionAgeFilter
+import io.github.kahme247.ompweb.domain.SessionListFilter
 import io.github.kahme247.ompweb.domain.applyRunningTransition
 import io.github.kahme247.ompweb.domain.comparableProjectPath
 import io.github.kahme247.ompweb.domain.orderProjectsByActivity
@@ -190,13 +192,21 @@ data class SessionsUiState(
     /** Project paths pinned for the current server origin, most recent first. */
     val pinnedProjectPaths: List<String> = emptyList(),
     val runningOnly: Boolean = false,
+    /** The Unread chip: marker, unread notification or a waiting input dialog. */
+    val unreadOnly: Boolean = false,
+    /** The age chip's preset, measured against `modified`. */
+    val ageFilter: SessionAgeFilter = SessionAgeFilter.All,
     val error: SessionsLoadError? = null,
     val connection: ConnectionState = ConnectionState.Reconnecting,
     val liveUpdates: Boolean = true,
     val notice: UiNotice? = null,
     val archive: ArchiveUiState = ArchiveUiState(),
     val autoName: AutoNameStatus = AutoNameStatus(),
-)
+) {
+    /** The three chips as one value (persisted per origin). */
+    val sessionFilter: SessionListFilter
+        get() = SessionListFilter(runningOnly = runningOnly, unreadOnly = unreadOnly, age = ageFilter)
+}
 
 /**
  * The workspace home: session list, managed projects, live running badges,
@@ -289,6 +299,12 @@ class SessionsViewModel(
      * and overwrite a pin the user just tapped (CI flake, 1.0.21).
      */
     @Volatile private var pinsSeededFor: String? = null
+
+    /**
+     * Origin whose filter chips were seeded from storage. Same rule as the
+     * pins: a late seed must not undo a chip the user tapped after start.
+     */
+    @Volatile private var filtersSeededFor: String? = null
     private var noticeCounter = 0L
 
     /**
@@ -337,6 +353,7 @@ class SessionsViewModel(
                     )
                 }
                 seedPins(originNow()?.origin ?: snapshot.origin?.origin)
+                seedFilters(originNow()?.origin ?: snapshot.origin?.origin)
                 maybeSeedProjectExpansion()
             }
         }
@@ -422,6 +439,16 @@ class SessionsViewModel(
         }
     }
 
+    /** Seeds the filter chips from storage once per origin, like the pins. */
+    private fun seedFilters(originKey: String?) {
+        if (originKey == null || filtersSeededFor == originKey) return
+        filtersSeededFor = originKey
+        val stored = preferences.snapshot.value.sessionFiltersByOrigin[originKey] ?: SessionListFilter()
+        _state.update {
+            it.copy(runningOnly = stored.runningOnly, unreadOnly = stored.unreadOnly, ageFilter = stored.age)
+        }
+    }
+
     private suspend fun load() {
         val origin = originNow()
         if (origin == null) {
@@ -430,6 +457,7 @@ class SessionsViewModel(
             // the stored expansion selection.
             loadedOrigin = null
             pinsSeededFor = null
+            filtersSeededFor = null
             liveListOrigin = null
             liveProjectsOrigin = null
             messageSearchJob?.cancel()
@@ -448,6 +476,7 @@ class SessionsViewModel(
         // snapshot (expansion memory, unread ids) must survive the first
         // load, otherwise every start overwrites the stored selection.
         if (previousOrigin != null && originKey != previousOrigin) {
+            val storedFilters = preferences.snapshot.value.sessionFiltersByOrigin[originKey] ?: SessionListFilter()
             messageSearchJob?.cancel()
             messageSearchGeneration++
             _state.update {
@@ -467,6 +496,9 @@ class SessionsViewModel(
                     // them across a server switch would pin unrelated sessions.
                     pinnedIds = preferences.snapshot.value.pinnedSessionsByOrigin[originKey].orEmpty(),
                     pinnedProjectPaths = preferences.snapshot.value.pinnedProjectsByOrigin[originKey].orEmpty(),
+                    runningOnly = storedFilters.runningOnly,
+                    unreadOnly = storedFilters.unreadOnly,
+                    ageFilter = storedFilters.age,
                     searchOpen = false,
                     searchQuery = "",
                     searchMode = SessionSearchMode.Sessions,
@@ -482,6 +514,7 @@ class SessionsViewModel(
                 )
             }
             pinsSeededFor = originKey
+            filtersSeededFor = originKey
             _history.value = NavigationHistory()
             liveListOrigin = null
             liveProjectsOrigin = null
@@ -492,6 +525,7 @@ class SessionsViewModel(
             // hold pins for this origin. Seeding runs once per origin, so a
             // load that lands after a pin tap cannot undo it.
             seedPins(originKey)
+            seedFilters(originKey)
         }
         // Cache-first: the last known workspace is painted before the first
         // request leaves, so a cold start shows its list in a few milliseconds
@@ -1495,8 +1529,37 @@ class SessionsViewModel(
         }
     }
 
-    fun setRunningOnly(runningOnly: Boolean) {
-        _state.update { it.copy(runningOnly = runningOnly) }
+    fun setRunningOnly(runningOnly: Boolean) = updateFilter { it.copy(runningOnly = runningOnly) }
+
+    fun setUnreadOnly(unreadOnly: Boolean) = updateFilter { it.copy(unreadOnly = unreadOnly) }
+
+    /** Selects one age preset; the choice is remembered per origin. */
+    fun setAgeFilter(age: SessionAgeFilter) = updateFilter { it.copy(age = age) }
+
+    /**
+     * Turns every chip off and empties the search field, so "Clear filters"
+     * always brings the full list back. The search panel stays open with an
+     * empty query; the stored origin record disappears with the default
+     * filter.
+     */
+    fun clearFilters() {
+        updateFilter { SessionListFilter() }
+        if (_state.value.searchQuery.isNotEmpty()) setSearchQuery("")
+    }
+
+    /**
+     * Applies a filter change to the state and stores it through the ordered
+     * preference queue (two fast chip taps leave the last state).
+     */
+    private fun updateFilter(transform: (SessionListFilter) -> SessionListFilter) {
+        val current = _state.value.sessionFilter
+        val next = transform(current)
+        if (next == current) return
+        _state.update {
+            it.copy(runningOnly = next.runningOnly, unreadOnly = next.unreadOnly, ageFilter = next.age)
+        }
+        val origin = originNow()?.origin ?: return
+        preferenceWrites.trySend { preferences.setSessionFilters(origin, next) }
     }
 
     /**

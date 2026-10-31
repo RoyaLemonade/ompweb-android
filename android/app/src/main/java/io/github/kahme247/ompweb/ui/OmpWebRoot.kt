@@ -78,6 +78,7 @@ import io.github.kahme247.ompweb.ui.settings.native.NativeSettingsTab
 import io.github.kahme247.ompweb.ui.settings.native.nativeSettingsSearchEntries
 import io.github.kahme247.ompweb.domain.FontSizePreference
 import io.github.kahme247.ompweb.domain.LOCAL_SETTINGS_SEARCH_ENTRIES
+import io.github.kahme247.ompweb.domain.unreadNotificationSessionIds
 import io.github.kahme247.ompweb.domain.TouchTargetsPreference
 import io.github.kahme247.ompweb.domain.settingsSearchEntries
 import io.github.kahme247.ompweb.domain.UiScalePreference
@@ -153,6 +154,20 @@ fun OmpWebRoot(container: AppContainer) {
                     val notificationHistoryViewModel: NotificationHistoryViewModel =
                         container.notificationHistoryViewModel
                     val sessionsState by sessionsViewModel.state.collectAsStateWithLifecycle()
+                    // The Unread filter's second source: an unread history
+                    // entry (read rows and other origins' cleaned-up entries
+                    // do not count).
+                    val notificationHistory by
+                        notificationHistoryViewModel.state.collectAsStateWithLifecycle()
+                    val notifiedUnreadIds = remember(notificationHistory.entries) {
+                        unreadNotificationSessionIds(notificationHistory.entries)
+                    }
+                    // Third source: a blocking input dialog that waits for an
+                    // answer belongs to exactly one session.
+                    val extensionDialog by container.chatExtensionUi.dialog.collectAsStateWithLifecycle()
+                    val awaitingInputSessionIds = remember(extensionDialog) {
+                        setOfNotNull(container.chatExtensionUi.dialogSessionId)
+                    }
                     var notificationsOpen by rememberSaveable { mutableStateOf(false) }
                     var settingsOpen by rememberSaveable { mutableStateOf(false) }
                     var settingsCwd by rememberSaveable { mutableStateOf<String?>(null) }
@@ -277,6 +292,8 @@ fun OmpWebRoot(container: AppContainer) {
                         overlayOpen = notificationsOpen || settingsOpen,
                         restoreSessionId = settings.lastSessionId,
                         restoreNewSessionCwd = settings.lastNewSessionCwd,
+                        notificationUnreadSessionIds = notifiedUnreadIds,
+                        awaitingInputSessionIds = awaitingInputSessionIds,
                         // D1: the update banner is content, not an overlay: it
                         // sits below the active pane's top bar, so the bar
                         // stays visible, tappable and in the a11y tree.

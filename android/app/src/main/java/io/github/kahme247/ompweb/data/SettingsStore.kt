@@ -14,6 +14,8 @@ import io.github.kahme247.ompweb.domain.DictationEnginePreference
 import io.github.kahme247.ompweb.domain.FontSizePreference
 import io.github.kahme247.ompweb.domain.NotifyIdentity
 import io.github.kahme247.ompweb.domain.NotifyPrefs
+import io.github.kahme247.ompweb.domain.SessionAgeFilter
+import io.github.kahme247.ompweb.domain.SessionListFilter
 import io.github.kahme247.ompweb.domain.SubmitDuringRunBehavior
 import io.github.kahme247.ompweb.domain.ToolPreset
 import io.github.kahme247.ompweb.domain.TouchTargetsPreference
@@ -39,7 +41,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "ompweb-settings")
@@ -67,6 +71,12 @@ data class SettingsSnapshot(
      * A project path is meaningless on another installation.
      */
     val pinnedProjectsByOrigin: Map<String, List<String>> = emptyMap(),
+    /**
+     * The sessions list's filter chips per server origin, like the pins: a
+     * record of `Running`/`Unread`/age on one installation means nothing on
+     * another.
+     */
+    val sessionFiltersByOrigin: Map<String, SessionListFilter> = emptyMap(),
     /** `dictation_engine` wire value (`auto`/`on_device`/`server`). */
     val dictationEngine: String = "auto",
     /** `dictation_language` BCP-47 tag; null uses the device locale. */
@@ -229,6 +239,7 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
                     unreadSessionIds = parseStringSet(preferences[UNREAD_SESSIONS]) ?: emptySet(),
                     pinnedSessionsByOrigin = parsePinnedSessions(preferences[PINNED_SESSIONS]),
                     pinnedProjectsByOrigin = parsePinnedProjects(preferences[PINNED_PROJECTS]),
+                    sessionFiltersByOrigin = parseSessionFilters(preferences[SESSION_FILTERS]),
                     dictationEngine = preferences[DICTATION_ENGINE]?.takeIf { it.isNotBlank() } ?: "auto",
                     dictationLanguage = preferences[DICTATION_LANGUAGE]?.takeIf { it.isNotBlank() },
                     toolPreset = preferences[TOOL_PRESET]?.takeIf { it.isNotBlank() } ?: ToolPreset.FULL.wireName,
@@ -411,6 +422,41 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
                 preferences.remove(PINNED_PROJECTS)
             } else {
                 preferences[PINNED_PROJECTS] = encodePinnedProjects(next)
+            }
+        }
+    }
+
+    /**
+     * The sessions list's filter bar is origin-scoped like the pins; the
+     * default filter removes the entry, so it costs no storage. One edit per
+     * change keeps a fast chip tap from leaving half a filter behind.
+     */
+    override suspend fun setSessionFilters(origin: String, filters: SessionListFilter) {
+        val key = origin.trim()
+        if (key.isEmpty()) return
+        val next = _snapshot.value.sessionFiltersByOrigin.toMutableMap().apply {
+            if (filters.isDefault) remove(key) else put(key, filters)
+        }
+        synchronized(this) { _snapshot.value = _snapshot.value.copy(sessionFiltersByOrigin = next) }
+        dataStore.edit { preferences ->
+            if (next.isEmpty()) {
+                preferences.remove(SESSION_FILTERS)
+            } else {
+                preferences[SESSION_FILTERS] = encodeSessionFilters(next)
+            }
+        }
+    }
+
+    /** Forgets the filter chips of [origin] — the installation being left. */
+    suspend fun clearSessionFilters(origin: String) {
+        val key = origin.trim()
+        val next = _snapshot.value.sessionFiltersByOrigin.toMutableMap().apply { remove(key) }
+        synchronized(this) { _snapshot.value = _snapshot.value.copy(sessionFiltersByOrigin = next) }
+        dataStore.edit { preferences ->
+            if (next.isEmpty()) {
+                preferences.remove(SESSION_FILTERS)
+            } else {
+                preferences[SESSION_FILTERS] = encodeSessionFilters(next)
             }
         }
     }
@@ -706,6 +752,7 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
         val UNREAD_SESSIONS = stringPreferencesKey("unread_sessions")
         val PINNED_SESSIONS = stringPreferencesKey("pinned_sessions_by_origin")
         val PINNED_PROJECTS = stringPreferencesKey("pinned_projects_by_origin")
+        val SESSION_FILTERS = stringPreferencesKey("session_filters_by_origin")
         val DICTATION_ENGINE = stringPreferencesKey("dictation_engine")
         val DICTATION_LANGUAGE = stringPreferencesKey("dictation_language")
         val TOOL_PRESET = stringPreferencesKey("tool_preset")
@@ -854,6 +901,41 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
             JsonObject(
                 values.toSortedMap().mapValues { (_, paths) ->
                     buildJsonArray { paths.forEach { add(JsonPrimitive(it)) } }
+                },
+            ).toString()
+
+        /**
+         * `{origin: {runningOnly, unreadOnly, age}}`. An unknown age falls back
+         * to `all`; entries that would not narrow the list are dropped so the
+         * stored state never lies about a filter.
+         */
+        fun parseSessionFilters(raw: String?): Map<String, SessionListFilter> {
+            if (raw.isNullOrBlank()) return emptyMap()
+            return try {
+                val root = json.parseToJsonElement(raw) as? JsonObject ?: return emptyMap()
+                root.mapNotNull { (origin, value) ->
+                    if (origin.isBlank()) return@mapNotNull null
+                    val entry = value as? JsonObject ?: return@mapNotNull null
+                    val filter = SessionListFilter(
+                        runningOnly = (entry["runningOnly"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                        unreadOnly = (entry["unreadOnly"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                        age = SessionAgeFilter.fromWire((entry["age"] as? JsonPrimitive)?.contentOrNull),
+                    )
+                    if (filter.isDefault) null else origin to filter
+                }.toMap()
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        }
+
+        fun encodeSessionFilters(values: Map<String, SessionListFilter>): String =
+            JsonObject(
+                values.toSortedMap().mapValues { (_, filter) ->
+                    buildJsonObject {
+                        put("runningOnly", JsonPrimitive(filter.runningOnly))
+                        put("unreadOnly", JsonPrimitive(filter.unreadOnly))
+                        put("age", JsonPrimitive(filter.age.wireName))
+                    }
                 },
             ).toString()
     }

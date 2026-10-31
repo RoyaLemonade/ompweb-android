@@ -3,6 +3,7 @@ package io.github.kahme247.ompweb.ui.sessions
 import androidx.lifecycle.ViewModelStore
 import io.github.kahme247.ompweb.data.SettingsSnapshot
 import io.github.kahme247.ompweb.data.WorkspacePreferences
+import io.github.kahme247.ompweb.domain.SessionListFilter
 import io.github.kahme247.ompweb.domain.ToolPreset
 import io.github.kahme247.ompweb.events.Backoff
 import io.github.kahme247.ompweb.events.EventChannel
@@ -491,6 +492,16 @@ class SessionActionsTest {
                 it.copy(
                     pinnedProjectsByOrigin = it.pinnedProjectsByOrigin.toMutableMap().apply {
                         if (paths.isEmpty()) remove(origin) else put(origin, paths)
+                    },
+                )
+            }
+        }
+
+        override suspend fun setSessionFilters(origin: String, filters: SessionListFilter) {
+            state.update {
+                it.copy(
+                    sessionFiltersByOrigin = it.sessionFiltersByOrigin.toMutableMap().apply {
+                        if (filters.isDefault) remove(origin) else put(origin, filters)
                     },
                 )
             }

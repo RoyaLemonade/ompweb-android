@@ -72,6 +72,14 @@ class ExtensionUiController(
     private val _dialog = MutableStateFlow<ExtensionDialogState?>(null)
     val dialog: StateFlow<ExtensionDialogState?> = _dialog.asStateFlow()
 
+    /**
+     * The session whose blocking dialog waits for an answer; `null` while no
+     * dialog is shown. The sessions list's Unread chip counts a waiting
+     * input dialog as unread, so the list needs the id without owning the
+     * dialog.
+     */
+    val dialogSessionId: String? get() = _dialog.value?.let { panelSession }
+
     private val _statusItems = MutableStateFlow<List<ExtensionStatusItem>>(emptyList())
     val statusItems: StateFlow<List<ExtensionStatusItem>> = _statusItems.asStateFlow()
 

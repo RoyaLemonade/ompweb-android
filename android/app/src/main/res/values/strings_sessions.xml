@@ -38,6 +38,20 @@
     </plurals>
     <string name="sessions_search_role_user">You</string>
     <string name="sessions_search_role_assistant">Assistant</string>
+    <!-- Filter bar: compact chips in one scrollable row -->
+    <string name="sessions_filter_running">Running</string>
+    <string name="sessions_filter_unread">Unread</string>
+    <string name="sessions_filter_age_chip">Age: %1$s</string>
+    <string name="sessions_filter_age_all">All</string>
+    <string name="sessions_filter_age_today">Today</string>
+    <string name="sessions_filter_age_two_days">2 days</string>
+    <string name="sessions_filter_age_seven_days">7 days</string>
+    <string name="sessions_filter_clear">Clear filters</string>
+    <plurals name="sessions_filter_hidden">
+        <item quantity="one">%d hidden by filters</item>
+        <item quantity="other">%d hidden by filters</item>
+    </plurals>
+
     <string name="sessions_pinned">Pinned</string>
     <string name="session_pin">Pin</string>
     <string name="session_unpin">Unpin</string>
