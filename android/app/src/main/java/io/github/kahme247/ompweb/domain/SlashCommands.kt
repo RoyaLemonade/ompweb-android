@@ -13,6 +13,8 @@ import kotlinx.serialization.json.contentOrNull
  * Web-native prompt commands exist because omp's own `/goal`, `/plan`, … are
  * TUI-only: over the RPC prompt path they would reach the model as literal
  * slash text. The client expands them into a real instruction instead.
+ * `/goal` is special: the chat sends it as omp's `goal` RPC and only uses this
+ * expansion when the server/omp does not know that command.
  */
 
 /** One entry of the composer palette; [description] may be empty. */
@@ -77,8 +79,7 @@ private fun loopPrompt(args: String): String {
 
 val WEB_SLASH_COMMANDS: List<WebSlashCommand> = listOf(
     WebSlashCommand("goal", requiresArgs = true, argumentHintKey = "composer_cmd_goal_arg") { args ->
-        "Work toward this goal for the rest of the session:\n\n$args\n\n" +
-            "Treat it as the objective to prioritize when deciding what to do next."
+        buildGoalObjective(args)
     },
     WebSlashCommand("plan", requiresArgs = true, argumentHintKey = "composer_cmd_plan_arg") { args ->
         "Create a plan for this task before doing anything else:\n\n$args\n\n" +

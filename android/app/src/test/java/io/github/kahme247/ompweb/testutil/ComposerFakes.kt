@@ -6,7 +6,6 @@ import io.github.kahme247.ompweb.data.ComposerDraftStore
 import io.github.kahme247.ompweb.data.DraftRecovery
 import io.github.kahme247.ompweb.data.DraftRecoveryEvent
 import io.github.kahme247.ompweb.data.SettingsSnapshot
-import io.github.kahme247.ompweb.domain.ActiveGoal
 import io.github.kahme247.ompweb.domain.DictationStore
 import io.github.kahme247.ompweb.domain.LocalRecording
 import io.github.kahme247.ompweb.domain.ServerSttSupport
@@ -73,7 +72,6 @@ class FakeChatSettings(
     private val state = MutableStateFlow(snapshot)
     override val snapshot: StateFlow<SettingsSnapshot> = state
     val scrollPositions = mutableMapOf<String, Int>()
-    val goals = mutableMapOf<String, ActiveGoal?>()
 
     override suspend fun setChatScrollPosition(sessionId: String, rowIndex: Int) {
         scrollPositions[sessionId] = rowIndex
@@ -98,13 +96,6 @@ class FakeChatSettings(
 
     override suspend fun setSoundEnabled(enabled: Boolean) {
         state.update { it.copy(soundEnabled = enabled) }
-    }
-
-    override suspend fun setActiveGoal(sessionId: String, goal: ActiveGoal?) {
-        goals[sessionId] = goal
-        state.update {
-            it.copy(activeGoals = if (goal == null) it.activeGoals - sessionId else it.activeGoals + (sessionId to goal))
-        }
     }
 
     override suspend fun setToolPreset(preset: ToolPreset) {

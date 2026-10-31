@@ -594,6 +594,21 @@ class ApiClient(
         parseSlashCommands((data as? JsonObject)?.get("commands"))
     }
 
+    override suspend fun goal(
+        sessionId: String,
+        op: String,
+        objective: String?,
+        tokenBudget: Long?,
+    ): JsonElement? = sendAgentCommand(
+        sessionId,
+        buildJsonObject {
+            put("type", "goal")
+            put("op", op)
+            if (objective != null) put("objective", objective)
+            if (tokenBudget != null) put("token_budget", tokenBudget)
+        },
+    )
+
     override suspend fun skillDiagnostics(sessionId: String): SkillDiagnosticsSnapshot? =
         parseSkillDiagnosticsSnapshot(
             sendAgentCommand(sessionId, buildJsonObject { put("type", "get_skill_diagnostics") }),

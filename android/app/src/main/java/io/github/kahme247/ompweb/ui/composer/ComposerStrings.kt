@@ -26,6 +26,10 @@ data class ComposerStrings(
     val compactedContext: String = "",
     val reloadedResources: String = "",
     val unknownCommand: String = "/%1\$s is not a command this session can run — it was sent as plain text.",
+    /** `goal` RPC is unknown to this server/omp: `/goal` fell back to a prompt. */
+    val goalUnsupported: String = "",
+    /** `goal` RPC is unknown: Pause/Resume/Drop could not be applied. */
+    val goalControlsUnsupported: String = "",
     val queuedRemovalUnavailable: String = "",
     val queuedPromotionUnavailable: String = "",
     val shellSessionFailed: String = "",
@@ -109,6 +113,8 @@ data class ComposerStrings(
                 compactedContext = app.getString(R.string.composer_notice_compacted),
                 reloadedResources = app.getString(R.string.composer_notice_reloaded),
                 unknownCommand = app.getString(R.string.composer_notice_unknown_command),
+                goalUnsupported = app.getString(R.string.composer_notice_goal_unsupported),
+                goalControlsUnsupported = app.getString(R.string.composer_notice_goal_controls_unsupported),
                 queuedRemovalUnavailable = app.getString(R.string.composer_notice_queued_removal_unavailable),
                 queuedPromotionUnavailable = app.getString(R.string.composer_notice_queued_promotion_unavailable),
                 shellSessionFailed = app.getString(R.string.composer_notice_shell_session_failed),

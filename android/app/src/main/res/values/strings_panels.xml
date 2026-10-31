@@ -49,8 +49,14 @@
 
     <!-- Composer status banners -->
     <string name="panels_goal_active">Goal active</string>
+    <string name="panels_goal_paused">Goal paused</string>
     <string name="panels_goal_expand">Expand active goal</string>
     <string name="panels_goal_collapse">Collapse active goal</string>
+    <string name="panels_goal_pause">Pause</string>
+    <string name="panels_goal_resume">Resume</string>
+    <string name="panels_goal_drop">Drop</string>
+    <string name="panels_goal_budget">%1$s / %2$s tokens</string>
+    <string name="panels_goal_tokens">%1$s tokens</string>
     <string name="panels_plan_in_progress">Planning in progress</string>
     <string name="panels_compact_result">%1$s %2$d -&gt; %3$d tokens (%4$d saved)</string>
     <string name="panels_compacted">Compacted</string>

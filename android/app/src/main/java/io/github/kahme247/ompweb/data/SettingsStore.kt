@@ -8,7 +8,6 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import io.github.kahme247.ompweb.domain.ActiveGoal
 import io.github.kahme247.ompweb.domain.AndroidUpdateCache
 import io.github.kahme247.ompweb.domain.DEFAULT_SOUND_ENABLED
 import io.github.kahme247.ompweb.domain.DictationEnginePreference
@@ -20,9 +19,7 @@ import io.github.kahme247.ompweb.domain.ToolPreset
 import io.github.kahme247.ompweb.domain.TouchTargetsPreference
 import io.github.kahme247.ompweb.domain.UiScalePreference
 import io.github.kahme247.ompweb.domain.UpdateKind
-import io.github.kahme247.ompweb.domain.encodeActiveGoal
 import io.github.kahme247.ompweb.domain.isValidNotificationId
-import io.github.kahme247.ompweb.domain.parseActiveGoal
 import io.github.kahme247.ompweb.domain.randomNotificationId
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
@@ -99,8 +96,6 @@ data class SettingsSnapshot(
     val wordCompletion: String = "auto",
     /** `omp-sound-enabled`: play the completion tone. */
     val soundEnabled: Boolean = DEFAULT_SOUND_ENABLED,
-    /** Per-session `/goal` records, keyed by session id. */
-    val activeGoals: Map<String, ActiveGoal> = emptyMap(),
     /** `omp-web:composer-todo-collapsed`: the attached todo panel starts collapsed. */
     val composerTodoCollapsed: Boolean = true,
     /** `omp-web:composer-subagents-collapsed`: the attached roster starts collapsed. */
@@ -249,7 +244,6 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
                     submitDuringRun = SubmitDuringRunBehavior.fromWire(preferences[SUBMIT_DURING_RUN]),
                     wordCompletion = preferences[WORD_COMPLETION]?.takeIf { it.isNotBlank() } ?: "auto",
                     soundEnabled = preferences[SOUND_ENABLED] ?: DEFAULT_SOUND_ENABLED,
-                    activeGoals = parseGoals(preferences[ACTIVE_GOALS]),
                     composerTodoCollapsed = preferences[COMPOSER_TODO_COLLAPSED] ?: true,
                     composerSubagentsCollapsed = preferences[COMPOSER_SUBAGENTS_COLLAPSED] ?: true,
                     openUrlAutomatically = preferences[OPEN_URL_AUTOMATICALLY] ?: false,
@@ -536,20 +530,6 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
         dataStore.edit { preferences -> preferences[SOUND_ENABLED] = enabled }
     }
 
-    override suspend fun setActiveGoal(sessionId: String, goal: ActiveGoal?) {
-        val next = _snapshot.value.activeGoals.toMutableMap().apply {
-            if (goal == null) remove(sessionId) else put(sessionId, goal)
-        }
-        synchronized(this) { _snapshot.value = _snapshot.value.copy(activeGoals = next) }
-        dataStore.edit { preferences ->
-            if (next.isEmpty()) {
-                preferences.remove(ACTIVE_GOALS)
-            } else {
-                preferences[ACTIVE_GOALS] = encodeGoals(next)
-            }
-        }
-    }
-
     override suspend fun setComposerTodoCollapsed(collapsed: Boolean) {
         synchronized(this) { _snapshot.value = _snapshot.value.copy(composerTodoCollapsed = collapsed) }
         dataStore.edit { preferences -> preferences[COMPOSER_TODO_COLLAPSED] = collapsed }
@@ -741,7 +721,6 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
         val SUBMIT_DURING_RUN = stringPreferencesKey("submit_during_run")
         val WORD_COMPLETION = stringPreferencesKey("word_completion")
         val SOUND_ENABLED = booleanPreferencesKey("sound_enabled")
-        val ACTIVE_GOALS = stringPreferencesKey("active_goals")
         val COMPOSER_TODO_COLLAPSED = booleanPreferencesKey("composer_todo_collapsed")
         val COMPOSER_SUBAGENTS_COLLAPSED = booleanPreferencesKey("composer_subagents_collapsed")
         val OPEN_URL_AUTOMATICALLY = booleanPreferencesKey("open_url_automatically")
@@ -799,25 +778,6 @@ class SettingsStore(context: Context, private val scope: CoroutineScope) :
         fun encodeScrollPositions(values: Map<String, Int>): String =
             kotlinx.serialization.json.JsonObject(
                 values.mapValues { JsonPrimitive(it.value) },
-            ).toString()
-
-        fun parseGoals(raw: String?): Map<String, ActiveGoal> {
-            if (raw.isNullOrBlank()) return emptyMap()
-            return try {
-                val root = json.parseToJsonElement(raw) as? kotlinx.serialization.json.JsonObject
-                    ?: return emptyMap()
-                root.mapNotNull { (sessionId, value) ->
-                    val goal = parseActiveGoal((value as? JsonPrimitive)?.contentOrNull) ?: return@mapNotNull null
-                    sessionId to goal
-                }.toMap()
-            } catch (_: Exception) {
-                emptyMap()
-            }
-        }
-
-        fun encodeGoals(goals: Map<String, ActiveGoal>): String =
-            kotlinx.serialization.json.JsonObject(
-                goals.mapValues { (_, goal) -> JsonPrimitive(encodeActiveGoal(goal)) },
             ).toString()
 
         fun parseOrigin(raw: String?): ServerAddress? {

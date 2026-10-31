@@ -103,13 +103,14 @@ import io.github.kahme247.ompweb.events.ConnectionState
 import io.github.kahme247.ompweb.net.ElsewhereSession
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.chat.CompactResult
-import io.github.kahme247.ompweb.domain.ActiveGoal
+import io.github.kahme247.ompweb.domain.GoalState
 import io.github.kahme247.ompweb.domain.ElsewhereKind
 import io.github.kahme247.ompweb.domain.elsewhereKind
 import io.github.kahme247.ompweb.domain.ExtensionDialogState
 import io.github.kahme247.ompweb.domain.ExtensionWidgetPlacement
 import io.github.kahme247.ompweb.domain.chatShowsConnecting
 import io.github.kahme247.ompweb.domain.formatGoalElapsed
+import io.github.kahme247.ompweb.domain.formatGoalTokens
 import io.github.kahme247.ompweb.ui.composer.ComposerBar
 import io.github.kahme247.ompweb.ui.composer.MinimizedComposerBar
 import io.github.kahme247.ompweb.ui.composer.MinimizeComposerButton
@@ -955,7 +956,13 @@ fun ChatScreen(
                                     }
                                 }
                             }
-                            ComposerModeStatus(goal = ui.activeGoal, plan = ui.planObjective)
+                            ComposerModeStatus(
+                                goal = ui.engine.goal,
+                                plan = ui.planObjective,
+                                onPauseGoal = viewModel::pauseGoal,
+                                onResumeGoal = viewModel::resumeGoal,
+                                onDropGoal = viewModel::dropGoal,
+                            )
                             CompactBanner(ui.compactResult, ui.compactError)
                             // The attached extension dialog sits above the
                             // panels, inside the composer column (web places it
@@ -1329,60 +1336,98 @@ internal fun CompactionNotice(includePreCompaction: Boolean, onToggle: () -> Uni
 }
 
 /**
- * Web `ComposerModeStatus`: the running goal (expandable, elapsed time) and…
- * plan banner for a `/plan` turn. Both are status-only, never interactive work.
+ * Web `ComposerModeStatus`: omp's live goal (objective, status, elapsed time
+ * and budget, with Pause/Resume/Drop) and the plan banner for a `/plan` turn.
+ * The goal comes from omp (`get_state.goal` / `goal_updated`), never from a
+ * client-side copy, so an aborted run shows the paused state omp reports.
  */
 @Composable
-internal fun ComposerModeStatus(goal: ActiveGoal?, plan: String?) {
+internal fun ComposerModeStatus(
+    goal: GoalState?,
+    plan: String?,
+    onPauseGoal: () -> Unit = {},
+    onResumeGoal: () -> Unit = {},
+    onDropGoal: () -> Unit = {},
+) {
     if (goal == null && plan == null) return
     val colors = LocalOmpColors.current
-    var expanded by remember(goal?.startedAt, goal?.objective) { mutableStateOf(false) }
-    var now by remember(goal?.startedAt) { mutableStateOf(System.currentTimeMillis()) }
-    // The elapsed label is minute-granular; a 30 s tick keeps it honest.
-    LaunchedEffect(goal?.startedAt) {
-        if (goal == null) return@LaunchedEffect
-        while (true) {
-            now = System.currentTimeMillis()
-            kotlinx.coroutines.delay(30_000L)
-        }
-    }
+    var expanded by remember(goal?.id, goal?.status, goal?.objective) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (goal != null) {
+            val status = stringResource(
+                if (goal.paused) R.string.panels_goal_paused else R.string.panels_goal_active,
+            )
+            val budget = when {
+                goal.tokenBudget != null -> stringResource(
+                    R.string.panels_goal_budget,
+                    formatGoalTokens(goal.tokensUsed),
+                    formatGoalTokens(goal.tokenBudget),
+                )
+                goal.tokensUsed > 0 -> stringResource(
+                    R.string.panels_goal_tokens,
+                    formatGoalTokens(goal.tokensUsed),
+                )
+                else -> null
+            }
             Surface(
                 color = colors.accent.copy(alpha = 0.07f),
                 contentColor = colors.text,
                 shape = RoundedCornerShape(6.dp),
                 border = androidx.compose.foundation.BorderStroke(1.dp, colors.accent.copy(alpha = 0.32f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = stringResource(
-                            if (expanded) R.string.panels_goal_collapse else R.string.panels_goal_expand,
-                        ),
-                        onClick = { expanded = !expanded },
-                    ),
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    modifier = Modifier.padding(start = 9.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
                     verticalAlignment = if (expanded) Alignment.Top else Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        text = stringResource(R.string.panels_goal_active) + " · " +
-                            formatGoalElapsed(now - goal.startedAt),
-                        color = colors.textDim,
-                        fontSize = 10.sp,
-                        fontFamily = OmpMonoFontFamily,
-                    )
-                    Text(
-                        text = goal.objective,
-                        color = colors.text,
-                        fontSize = 12.sp,
-                        maxLines = if (expanded) Int.MAX_VALUE else 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable(
+                                role = Role.Button,
+                                onClickLabel = stringResource(
+                                    if (expanded) R.string.panels_goal_collapse else R.string.panels_goal_expand,
+                                ),
+                                onClick = { expanded = !expanded },
+                            ),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = status + " · " + formatGoalElapsed(goal.timeUsedSeconds),
+                                color = colors.textDim,
+                                fontSize = 10.sp,
+                                fontFamily = OmpMonoFontFamily,
+                            )
+                            if (budget != null) {
+                                Text(
+                                    text = budget,
+                                    color = colors.textDim,
+                                    fontSize = 10.sp,
+                                    fontFamily = OmpMonoFontFamily,
+                                )
+                            }
+                        }
+                        Text(
+                            text = goal.objective,
+                            color = colors.text,
+                            fontSize = 12.sp,
+                            maxLines = if (expanded) Int.MAX_VALUE else 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    TextButton(onClick = if (goal.paused) onResumeGoal else onPauseGoal) {
+                        Text(
+                            text = stringResource(
+                                if (goal.paused) R.string.panels_goal_resume else R.string.panels_goal_pause,
+                            ),
+                            fontSize = 11.sp,
+                        )
+                    }
+                    TextButton(onClick = onDropGoal) {
+                        Text(text = stringResource(R.string.panels_goal_drop), fontSize = 11.sp)
+                    }
                 }
             }
         }

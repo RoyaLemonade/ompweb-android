@@ -34,7 +34,6 @@ import io.github.kahme247.ompweb.data.OutboxEntry
 import io.github.kahme247.ompweb.data.OutboxStore
 import io.github.kahme247.ompweb.data.TemplateStore
 import io.github.kahme247.ompweb.data.TranscriptCache
-import io.github.kahme247.ompweb.domain.ActiveGoal
 import io.github.kahme247.ompweb.domain.BashInvocation
 import io.github.kahme247.ompweb.domain.ComposerImage
 import io.github.kahme247.ompweb.domain.ComposerRoute
@@ -53,8 +52,9 @@ import io.github.kahme247.ompweb.domain.SubagentActivityEvent
 import io.github.kahme247.ompweb.domain.SubagentInfo
 import io.github.kahme247.ompweb.domain.SubagentSource
 import io.github.kahme247.ompweb.domain.SubagentTranscriptMessage
-import io.github.kahme247.ompweb.domain.createActiveGoal
+import io.github.kahme247.ompweb.domain.buildGoalObjective
 import io.github.kahme247.ompweb.domain.getWebSlashCommand
+import io.github.kahme247.ompweb.domain.isUnknownGoalCommand
 import io.github.kahme247.ompweb.domain.parseSubagentHistoryEntry
 import io.github.kahme247.ompweb.domain.parseSubagentSnapshot
 import io.github.kahme247.ompweb.domain.parseSubagentTranscriptPage
@@ -228,8 +228,6 @@ data class ChatUiState(
     val stopping: Boolean = false,
     /** Forked edit-and-resend text waiting for the composer to adopt it. */
     val prefill: String? = null,
-    /** The session's active `/goal`, shown above the composer. */
-    val activeGoal: ActiveGoal? = null,
     /** `omp-web:submit-during-run`, read for the composer's Enter behavior. */
     val submitDuringRun: SubmitDuringRunBehavior = SubmitDuringRunBehavior.DEFAULT,
     /** The `/plan` turn still running; its banner sits above the composer. */
@@ -892,6 +890,10 @@ class ChatViewModel(
                 ChatEvent.Toast(composerStrings.requiresArgs(route.command, route.argumentHint)),
             )
             is ComposerRoute.WebPrompt -> {
+                if (route.name == "goal") {
+                    submitGoal(submission, route, streaming, forceQueue)
+                    return
+                }
                 if (streaming) {
                     queueOrSteer(submission, route, submitMode(forceQueue))
                     return
@@ -914,14 +916,6 @@ class ChatViewModel(
                     // Web `activePlan`: the banner lives for this turn only.
                     _ui.update { it.copy(planObjective = route.args.takeIf { dispatched && it.isNotEmpty() }) }
                 }
-                if (route.name == "goal" && route.args.isNotEmpty()) {
-                    val sid = sessionId
-                    if (sid != null) {
-                        val goal = createActiveGoal(route.args, System.currentTimeMillis())
-                        viewModelScope.launch { settings.setActiveGoal(sid, goal) }
-                        _ui.update { it.copy(activeGoal = goal) }
-                    }
-                }
             }
             is ComposerRoute.Builtin -> runBuiltinAction(route.name, route.args)
             is ComposerRoute.Prompt -> {
@@ -930,6 +924,87 @@ class ChatViewModel(
                 } else if (!holdForForeignOwner(submission)) {
                     sendPrompt(submission, clearOnSuccess = true)
                 }
+            }
+        }
+    }
+
+    /**
+     * `/goal <aim>` starts omp's real goal mode (`{type:"goal", op:"create"}`)
+     * instead of sending a prompt. omp owns the banner from here on:
+     * `goal_updated`/`get_state.goal` feed it and its continuation turns keep
+     * the agent working until every stop condition is verified.
+     *
+     * A server or omp that does not know the command answers "Unknown/
+     * Unsupported command: goal". The aim must never be lost then: the same
+     * plan template goes out as a plain prompt and a notice says why.
+     */
+    private fun submitGoal(
+        submission: ComposerSubmission,
+        route: ComposerRoute.WebPrompt,
+        streaming: Boolean,
+        forceQueue: Boolean,
+    ) {
+        val sid = sessionId ?: return
+        val objective = buildGoalObjective(route.args)
+        if (rejectsOversized(objective, emptyList())) return
+        val key = composer.currentDraftKey
+        composer.clear()
+        viewModelScope.launch {
+            try {
+                val data = api.goal(sid, "create", objective)
+                engine.applyGoalResponse(data)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (isUnknownGoalCommand(error)) {
+                    engine.notify(NoticeKind.Warning, composerStrings.goalUnsupported)
+                    val fallback = ComposerSubmission(
+                        raw = submission.raw,
+                        prompt = objective,
+                        images = emptyList(),
+                        hasAttachments = false,
+                        bash = null,
+                    )
+                    if (streaming) {
+                        queueOrSteer(fallback, route, submitMode(forceQueue))
+                    } else if (!sendPrompt(fallback, clearOnSuccess = false)) {
+                        recoverDraft(key, submission.raw, emptyList())
+                    }
+                } else {
+                    if (!reportForeignCommand(error)) engine.notify(NoticeKind.Error, error.userMessage())
+                    recoverDraft(key, submission.raw, emptyList())
+                }
+            } finally {
+                pumpEffects()
+            }
+        }
+    }
+
+    /** Pause the live goal (`{type:"goal", op:"pause"}`). */
+    fun pauseGoal() = changeGoal("pause")
+
+    /** Resume a paused goal (`{type:"goal", op:"resume"}`). */
+    fun resumeGoal() = changeGoal("resume")
+
+    /** Remove the goal (`{type:"goal", op:"drop"}`). */
+    fun dropGoal() = changeGoal("drop")
+
+    private fun changeGoal(op: String) {
+        val sid = sessionId ?: return
+        viewModelScope.launch {
+            try {
+                val data = api.goal(sid, op)
+                engine.applyGoalResponse(data)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (isUnknownGoalCommand(error)) {
+                    engine.notify(NoticeKind.Warning, composerStrings.goalControlsUnsupported)
+                } else if (!reportForeignCommand(error)) {
+                    engine.notify(NoticeKind.Error, error.userMessage())
+                }
+            } finally {
+                pumpEffects()
             }
         }
     }
@@ -1557,7 +1632,6 @@ class ChatViewModel(
                 githubRepo = null,
                 restoreScrollIndex = restore.takeIf { index -> index > 0 },
                 prefill = prefillBySession.remove(sessionId),
-                activeGoal = settings.snapshot.value.activeGoals[sessionId],
                 planObjective = null,
                 systemPrompt = SystemPromptState.Idle,
                 // A move belongs to the chat that was copied, not the next one.
@@ -3623,7 +3697,6 @@ class ChatViewModel(
                 restoreScrollIndex = restore,
                 // Compaction banners only matter while history is shown.
                 notices = notices,
-                activeGoal = sessionId?.let { settings.snapshot.value.activeGoals[it] },
                 submitDuringRun = settings.snapshot.value.submitDuringRun,
                 planObjective = planObjective,
                 todoCollapsed = settings.snapshot.value.composerTodoCollapsed,

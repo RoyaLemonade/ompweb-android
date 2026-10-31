@@ -116,6 +116,7 @@ class ChatViewModelTest {
         submitAbandoned = SUBMIT_ABANDONED,
         foreignSendBlocked = FOREIGN_BLOCKED,
         foreignCommandBlocked = FOREIGN_COMMAND_BLOCKED,
+        goalUnsupported = GOAL_UNSUPPORTED,
     )
     private var completionTones = 0
     private val completionSound = CompletionSound { completionTones++ }
@@ -2634,6 +2635,90 @@ class ChatViewModelTest {
         )
     }
 
+    @Test
+    fun aGoalCommandStartsOmpGoalModeInsteadOfAPrompt() = chatTest {
+        api.goalReply = parse(
+            """{"goal":{"id":"g1","objective":"ship it","status":"active","tokensUsed":1},
+                "state":{"enabled":true,"mode":"active"}}""",
+        )
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+
+        vm.composer.setText(
+            """
+            /goal ship the export
+            No-gos:
+            - never touch production
+            Stop conditions:
+            - the full test suite passes
+            """.trimIndent(),
+        )
+        vm.submit()
+        runCurrent()
+
+        val call = api.goalCalls.single()
+        assertEquals("s1", call.first)
+        assertEquals("create", call.second)
+        assertTrue("the aim rides in the objective", call.third!!.contains("ship the export"))
+        assertTrue("user no-gos ride along", call.third!!.contains("never touch production"))
+        assertTrue("user stop conditions ride along", call.third!!.contains("the full test suite passes"))
+        assertTrue("the raw slash command never becomes a prompt", api.prompts.isEmpty())
+        assertEquals("the draft leaves the composer", "", vm.composer.state.value.text)
+        assertEquals("omp's goal paints the banner", "ship it", vm.ui.value.engine.goal!!.objective)
+    }
+
+    @Test
+    fun aKnownGoalCommandFallsBackToAPromptOnOldServers() = chatTest {
+        api.goalFailure = ApiError.ServerResponse(500, null, "Error: Unsupported command: goal")
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+
+        vm.composer.setText("/goal ship it")
+        vm.submit()
+        runCurrent()
+
+        assertEquals(listOf("create"), api.goalCalls.map { it.second })
+        assertEquals("the aim is not lost", 1, api.prompts.size)
+        assertTrue(api.prompts.single().second.contains("ship it"))
+        assertTrue(api.prompts.single().second.contains("Stop conditions"))
+        assertTrue(
+            "the fallback is explained",
+            vm.ui.value.notices.any {
+                it.kind == NoticeKind.Warning && it.message == GOAL_UNSUPPORTED
+            },
+        )
+    }
+
+    @Test
+    fun goalBannerActionsSendOmpLifecycleOps() = chatTest {
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+        emit(
+            """
+            {"type":"goal_updated","goal":{"id":"g1","objective":"ship it","status":"active"},
+             "state":{"enabled":true,"mode":"active"}}
+            """.trimIndent(),
+        )
+
+        api.goalReply = parse(
+            """{"goal":{"id":"g1","objective":"ship it","status":"paused"},
+                "state":{"enabled":false,"mode":"active"}}""",
+        )
+        vm.pauseGoal()
+        runCurrent()
+        assertEquals("pause", api.goalCalls.last().second)
+        assertTrue("the paused banner offers Resume", vm.ui.value.engine.goal!!.paused)
+
+        api.goalReply = parse("""{"goal":null,"state":null}""")
+        vm.dropGoal()
+        runCurrent()
+        assertEquals("drop", api.goalCalls.last().second)
+        assertNull("a dropped goal leaves the banner", vm.ui.value.engine.goal)
+    }
+
     private class FakeApi : ChatApi {
         var contextPage: JsonObject = page("s1", emptyList())
         var promptFailure: Exception? = null
@@ -2659,6 +2744,10 @@ class ChatViewModelTest {
         /** Holds the history answer until the test releases it (cache-first ordering). */
         var contextGate: CompletableDeferred<Unit>? = null
         val prompts = mutableListOf<Pair<String, String>>()
+        /** `(session, op, objective)` of every `goal` RPC, in order. */
+        val goalCalls = mutableListOf<Triple<String, String, String?>>()
+        var goalFailure: Exception? = null
+        var goalReply: JsonElement? = null
         /** `?force=1` of every prompt, in order (the copy override). */
         val promptForces = mutableListOf<Boolean>()
         val steers = mutableListOf<Pair<String, String>>()
@@ -2696,6 +2785,17 @@ class ChatViewModelTest {
             if (promptFailures.isNotEmpty()) throw promptFailures.removeAt(0)
             promptFailure?.let { throw it }
             return null
+        }
+
+        override suspend fun goal(
+            sessionId: String,
+            op: String,
+            objective: String?,
+            tokenBudget: Long?,
+        ): JsonElement? {
+            goalCalls += Triple(sessionId, op, objective)
+            goalFailure?.let { throw it }
+            return goalReply
         }
 
         override suspend fun agentState(sessionId: String): JsonObject {
@@ -2944,6 +3044,8 @@ class ChatViewModelTest {
             "Another omp process is running this chat — the message was not sent."
         const val FOREIGN_COMMAND_BLOCKED =
             "Another omp process is running this chat — the command was not applied."
+        const val GOAL_UNSUPPORTED =
+            "This server does not support goal mode yet — sent as a prompt."
         const val LIVE_STATE_SUBMIT_TIMEOUT = 10_000L
         const val STOP_UNCONFIRMED = "Stop not confirmed yet — omp is busy."
         const val RECONCILE_MILLIS = 15_000L

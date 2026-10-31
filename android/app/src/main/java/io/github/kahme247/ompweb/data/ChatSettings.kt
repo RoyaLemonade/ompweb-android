@@ -1,6 +1,5 @@
 package io.github.kahme247.ompweb.data
 
-import io.github.kahme247.ompweb.domain.ActiveGoal
 import io.github.kahme247.ompweb.domain.SubmitDuringRunBehavior
 import io.github.kahme247.ompweb.domain.ToolPreset
 import kotlinx.coroutines.flow.StateFlow
@@ -30,9 +29,6 @@ interface ChatSettings {
 
     /** `omp-sound-enabled`: the completion tone. */
     suspend fun setSoundEnabled(enabled: Boolean)
-
-    /** The session's active `/goal`, or null to clear it. */
-    suspend fun setActiveGoal(sessionId: String, goal: ActiveGoal?)
 
     /** `omp-web:composer-todo-collapsed`: the attached todo panel's body. */
     suspend fun setComposerTodoCollapsed(collapsed: Boolean)

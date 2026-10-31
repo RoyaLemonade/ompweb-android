@@ -16,8 +16,8 @@
     <string name="composer_attach_file_skipped">%1$d file(s) skipped.</string>
 
     <!-- Built-in slash commands (web `chatInput.cmd*`) -->
-    <string name="composer_cmd_goal_desc">Set the goal for this session</string>
-    <string name="composer_cmd_goal_arg">[goal]</string>
+    <string name="composer_cmd_goal_desc">Start an omp goal with a plan, no-gos and verifiable stop conditions</string>
+    <string name="composer_cmd_goal_arg">[aim] [No-gos: …] [Stop conditions: …]</string>
     <string name="composer_cmd_plan_desc">Create a step-by-step plan</string>
     <string name="composer_cmd_plan_arg">[task]</string>
     <string name="composer_cmd_review_desc">Review project state and changes</string>
@@ -58,6 +58,8 @@
     <string name="composer_notice_compacted">Context compacted</string>
     <string name="composer_notice_reloaded">Reloaded session resources</string>
     <string name="composer_notice_unknown_command">/%1$s is not a command this session can run — it was sent as plain text.</string>
+    <string name="composer_notice_goal_unsupported">This server does not support goal mode yet — the goal was sent as a normal prompt with the plan instructions instead.</string>
+    <string name="composer_notice_goal_controls_unsupported">This server does not support goal mode yet — the goal could not be changed.</string>
     <string name="composer_notice_queued_removal_unavailable">This message is no longer pending in that queue and could not be cancelled.</string>
     <string name="composer_notice_queued_promotion_unavailable">The queued follow-up is no longer available to steer.</string>
     <string name="composer_notice_shell_session_failed">Unable to create a session for the shell command</string>

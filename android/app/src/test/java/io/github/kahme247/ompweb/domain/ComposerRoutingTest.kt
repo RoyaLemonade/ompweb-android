@@ -51,7 +51,7 @@ class ComposerRoutingTest {
         )
         assertTrue(
             "the raw slash text never reaches omp: ${routed.prompt}",
-            routed.prompt.startsWith("Work toward this goal"),
+            routed.prompt.contains("Stop conditions"),
         )
     }
 

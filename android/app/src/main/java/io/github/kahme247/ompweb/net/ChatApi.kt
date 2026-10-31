@@ -67,6 +67,18 @@ interface ChatApi {
     /** `{type:"get_commands"}` — omp's slash command roster. */
     suspend fun commands(sessionId: String): List<SlashCommandItem>
 
+    /**
+     * `{type:"goal", op:"get"|"create"|"resume"|"pause"|"drop", objective?, token_budget?}`
+     * — omp's goal mode. The reply is `{goal, state}`; older servers answer an
+     * unsupported-command error (see `isUnknownGoalCommand`).
+     */
+    suspend fun goal(
+        sessionId: String,
+        op: String,
+        objective: String? = null,
+        tokenBudget: Long? = null,
+    ): JsonElement?
+
     /** `{type:"compact"}` with optional custom instructions. */
     suspend fun compact(sessionId: String, customInstructions: String? = null): JsonElement?
 

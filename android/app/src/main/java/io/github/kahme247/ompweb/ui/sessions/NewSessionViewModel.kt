@@ -6,7 +6,9 @@ import io.github.kahme247.ompweb.data.ComposerDraftStore
 import io.github.kahme247.ompweb.domain.ComposerRoute
 import io.github.kahme247.ompweb.domain.DictationOutcome
 import io.github.kahme247.ompweb.domain.DictationResult
+import io.github.kahme247.ompweb.domain.buildGoalObjective
 import io.github.kahme247.ompweb.domain.dictationOutcome
+import io.github.kahme247.ompweb.domain.isUnknownGoalCommand
 import io.github.kahme247.ompweb.domain.routeComposerSubmission
 import io.github.kahme247.ompweb.net.ApiClient
 import io.github.kahme247.ompweb.net.ApiError
@@ -291,7 +293,21 @@ class NewSessionViewModel(
                         route.invocation.command,
                         route.invocation.excludeFromContext,
                     )
-                    is ComposerRoute.WebPrompt -> api.prompt(createdId, route.prompt, emptyList())
+                    is ComposerRoute.WebPrompt -> {
+                        if (route.name == "goal") {
+                            val objective = buildGoalObjective(route.args)
+                            try {
+                                api.goal(createdId, "create", objective)
+                            } catch (unsupported: ApiError) {
+                                if (!isUnknownGoalCommand(unsupported)) throw unsupported
+                                // Older server/omp: keep the aim alive as a prompt.
+                                composer.showNotice(composerStrings.goalUnsupported)
+                                api.prompt(createdId, objective, emptyList())
+                            }
+                        } else {
+                            api.prompt(createdId, route.prompt, emptyList())
+                        }
+                    }
                     else -> api.prompt(createdId, submission.prompt, submission.images)
                 }
                 composer.clear()

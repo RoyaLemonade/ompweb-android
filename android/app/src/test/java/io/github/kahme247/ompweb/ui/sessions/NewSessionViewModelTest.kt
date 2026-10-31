@@ -68,6 +68,9 @@ class NewSessionViewModelTest {
     @Volatile private var createBody: String? = null
     @Volatile private var promptBody: String? = null
     @Volatile private var commandBody: String? = null
+    @Volatile private var goalBody: String? = null
+    /** Overrides the `/api/agent/new-1` answer for a `goal` command. */
+    @Volatile private var goalResponse: MockResponse? = null
     @Volatile private var createCalls = 0
     /** Overrides the `/api/cwd/validate` answer for the invalid-workspace cases. */
     @Volatile private var cwdValidation: MockResponse? = null
@@ -109,8 +112,22 @@ class NewSessionViewModelTest {
                     }
                     path.startsWith("/api/agent/new-1") -> {
                         val body = request.body.readUtf8()
-                        if (body.contains("\"type\":\"bash\"")) commandBody = body else promptBody = body
-                        json("""{"ok":true}""")
+                        when {
+                            body.contains("\"type\":\"goal\"") -> {
+                                goalBody = body
+                                goalResponse ?: json(
+                                    """{"success":true,"data":{"goal":{"id":"g1","objective":"ship it","status":"active"},"state":{"enabled":true,"mode":"active"}}}""",
+                                )
+                            }
+                            body.contains("\"type\":\"bash\"") -> {
+                                commandBody = body
+                                json("""{"ok":true}""")
+                            }
+                            else -> {
+                                promptBody = body
+                                json("""{"ok":true}""")
+                            }
+                        }
                     }
                     path.startsWith("/api/agent/") -> json("""{"ok":true}""")
                     else -> MockResponse().setResponseCode(404)
@@ -126,7 +143,11 @@ class NewSessionViewModelTest {
         viewModel = NewSessionViewModel(
             api = api,
             drafts = drafts,
-            composerStrings = ComposerStrings(noSession = NO_SESSION, cwdInvalid = CWD_INVALID),
+            composerStrings = ComposerStrings(
+                noSession = NO_SESSION,
+                cwdInvalid = CWD_INVALID,
+                goalUnsupported = GOAL_UNSUPPORTED,
+            ),
             controls = ComposerControlsViewModel(api, settings, scope),
             dictation = DictationViewModel(stt, MemoryDictationStore(), scope, clock = { 0L }),
             worktreeCache = worktreeCache,
@@ -287,7 +308,7 @@ class NewSessionViewModelTest {
     }
 
     @Test
-    fun `a web slash command reaches the agent as its expanded prompt`() {
+    fun `a goal command starts goal mode on the new session`() {
         viewModel.prepare("/home/test/project")
         // Send is gated on the workspace validation (A9): wait for both the
         // models and the `/api/cwd/validate` answer before tapping.
@@ -296,13 +317,37 @@ class NewSessionViewModelTest {
 
         viewModel.composer.setText("/goal ship it")
         viewModel.send()
-        waitFor("prompt sent") { createdSessions.isNotEmpty() }
+        waitFor("goal sent") { createdSessions.isNotEmpty() }
 
         assertEquals("new-1", createdSessions.single().id)
-        val body = promptBody.orEmpty()
-        assertTrue("the expansion is sent: $body", body.contains("Work toward this goal"))
-        assertTrue("the argument survives: $body", body.contains("ship it"))
+        val body = goalBody.orEmpty()
+        assertTrue("the goal RPC is sent: $body", body.contains("\"type\":\"goal\""))
+        assertTrue("create is the op: $body", body.contains("\"op\":\"create\""))
+        assertTrue("the aim survives: $body", body.contains("ship it"))
+        assertTrue("the plan template is part of the objective: $body", body.contains("Stop conditions"))
         assertFalse("the raw slash text never reaches omp: $body", body.contains("\"message\":\"/goal"))
+        assertNull("goal mode needs no prompt", promptBody)
+    }
+
+    @Test
+    fun `an unsupported goal command falls back to the expanded prompt`() {
+        goalResponse = MockResponse()
+            .setResponseCode(400)
+            .setHeader("Content-Type", "application/json")
+            .setBody("""{"error":"Error: Unsupported command: goal"}""")
+        viewModel.prepare("/home/test/project")
+        waitFor("models loaded") { viewModel.controls.state.value.models.isNotEmpty() }
+        waitFor("workspace validated") { viewModel.state.value.cwdValid == true }
+
+        viewModel.composer.setText("/goal ship it")
+        viewModel.send()
+        waitFor("prompt fallback sent") { createdSessions.isNotEmpty() }
+
+        assertTrue("the goal was attempted: ${goalBody.orEmpty()}", goalBody != null)
+        val body = promptBody.orEmpty()
+        assertTrue("the aim is not lost: $body", body.contains("ship it"))
+        assertTrue("the plan instructions survive: $body", body.contains("Stop conditions"))
+        waitFor("the fallback is explained") { viewModel.state.value.notice == GOAL_UNSUPPORTED }
     }
 
     @Test
@@ -425,6 +470,7 @@ class NewSessionViewModelTest {
     private companion object {
         const val NO_SESSION = "No active session"
         const val CWD_INVALID = "That workspace is not available"
+        const val GOAL_UNSUPPORTED = "This server does not support goal mode yet."
     }
 }
 

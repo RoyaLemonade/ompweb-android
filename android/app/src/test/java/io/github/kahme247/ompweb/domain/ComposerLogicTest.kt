@@ -62,25 +62,6 @@ class ComposerLogicTest {
         assertTrue(inputHistory(listOf("", "  ")).isEmpty())
     }
 
-    // ---------------------------------------------------------------- goals
-
-    @Test
-    fun `an active goal round-trips through its stored JSON`() {
-        val goal = createActiveGoal("  ship the export  ", 1_700_000_000_000)
-        assertEquals("ship the export", goal.objective)
-        assertEquals(goal, parseActiveGoal(encodeActiveGoal(goal)))
-        assertNull(parseActiveGoal("not json"))
-        assertNull(parseActiveGoal(""))
-    }
-
-    @Test
-    fun `elapsed goal time reads as minutes, hours and days`() {
-        assertEquals("0m", formatGoalElapsed(30_000))
-        assertEquals("5m", formatGoalElapsed(5 * 60_000L))
-        assertEquals("2h 3m", formatGoalElapsed((2 * 3_600_000L) + (3 * 60_000L)))
-        assertEquals("25h 0m", formatGoalElapsed((25 * 3_600_000L)))
-    }
-
     // ------------------------------------------------------ slash expansion
 
     @Test
@@ -88,7 +69,7 @@ class ComposerLogicTest {
         val expansion = expandWebSlashCommand("/goal ship the export")
         assertTrue(expansion is WebSlashExpansion.Expand)
         assertTrue((expansion as WebSlashExpansion.Expand).prompt.contains("ship the export"))
-        assertTrue(expansion.prompt.startsWith("Work toward this goal"))
+        assertTrue(expansion.prompt.contains("Stop conditions"))
     }
 
     @Test

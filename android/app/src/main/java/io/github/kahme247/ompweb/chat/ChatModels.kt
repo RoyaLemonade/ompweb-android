@@ -255,6 +255,11 @@ data class ChatState(
     val bashRunning: Boolean = false,
     /** The live todo plan (`get_state` / context pages), shown above the composer. */
     val todoPhases: List<io.github.kahme247.ompweb.domain.TodoPhase> = emptyList(),
+    /**
+     * omp's live goal (`get_state.goal`, `goal_updated`); null when no goal is
+     * active or paused. This is the only goal source — the client keeps no copy.
+     */
+    val goal: io.github.kahme247.ompweb.domain.GoalState? = null,
     /** Roster fed by `subagent_lifecycle`/`subagent_progress`/`get_subagents`/history. */
     val subagents: List<io.github.kahme247.ompweb.domain.SubagentInfo> = emptyList(),
     /** Bounded per-subagent activity buffer for the transcript dialog. */

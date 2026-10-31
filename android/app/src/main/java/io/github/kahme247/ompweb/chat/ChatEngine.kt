@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import io.github.kahme247.ompweb.domain.SUBAGENT_ACTIVITY_BUFFER_MAX
 import io.github.kahme247.ompweb.net.ElsewhereSession
 import io.github.kahme247.ompweb.domain.SkillDiagnosticsSnapshot
+import io.github.kahme247.ompweb.domain.parseGoal
 import io.github.kahme247.ompweb.domain.SubagentAgentSource
 import io.github.kahme247.ompweb.domain.SubagentInfo
 import io.github.kahme247.ompweb.domain.SubagentSource
@@ -570,6 +571,10 @@ class ChatEngine(
             expectedSkillDiagnosticsRevision == _state.value.skillDiagnosticsRevision
         // A snapshot without `todoPhases` (older omp) keeps the current plan.
         val todoPhases = state["todoPhases"]?.let(::parseTodoPhases)
+        // A snapshot without `goal` (older omp) keeps what is known; an
+        // explicit null is omp saying the goal was completed or dropped.
+        val hasGoalField = state.containsKey("goal")
+        val goal = if (hasGoalField) visibleGoal(parseGoal(state["goal"])) else null
         // The foreign owner is top-level and always present on a server that
         // knows it; an absent field (older server) keeps whatever is known.
         val elsewhere = if (root.containsKey("elsewhere")) {
@@ -597,6 +602,7 @@ class ChatEngine(
                 liveTokensPerSecond = if (isStreaming) it.liveTokensPerSecond else null,
                 queue = if (queueCurrent) parseQueue(state.obj("queuedMessages")) ?: it.queue else it.queue,
                 todoPhases = todoPhases ?: it.todoPhases,
+                goal = if (hasGoalField) goal else it.goal,
                 // The server answered for this session: the run state is known,
                 // even when it answers "nothing is running".
                 liveStateKnown = true,
@@ -614,6 +620,24 @@ class ChatEngine(
             finishRun(surfaceError = true)
         }
     }
+
+    /**
+     * Apply a `goal_updated` payload or the `{goal, state}` data of a `goal`
+     * RPC reply. Dropped/completed goals become null; a paused goal stays
+     * visible so the banner can offer Resume.
+     */
+    fun applyGoal(element: JsonElement?) {
+        val goal = visibleGoal(parseGoal(element))
+        _state.update { if (it.goal == goal) it else it.copy(goal = goal) }
+    }
+
+    /** Apply the `data` object of a `goal` command reply (`data.goal`). */
+    fun applyGoalResponse(data: JsonElement?) {
+        applyGoal((data as? JsonObject)?.get("goal"))
+    }
+
+    private fun visibleGoal(goal: io.github.kahme247.ompweb.domain.GoalState?): io.github.kahme247.ompweb.domain.GoalState? =
+        goal?.takeIf { it.visible }
 
     /**
      * Apply the answer of `set_skill_startup_diagnostics`. [expectedRevision]
@@ -744,6 +768,7 @@ class ChatEngine(
                 val commands = io.github.kahme247.ompweb.domain.parseSlashCommands(frame["commands"])
                 if (commands.isNotEmpty()) _state.update { it.copy(remoteCommands = commands) }
             }
+            "goal_updated" -> applyGoal(frame["goal"])
             "queue_update" -> {
                 // A full snapshot only; a partial payload must not clear the
                 // queue (web `readQueueSnapshot`).
