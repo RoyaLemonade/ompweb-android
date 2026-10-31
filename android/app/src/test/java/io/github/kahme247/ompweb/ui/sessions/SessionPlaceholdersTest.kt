@@ -5,6 +5,7 @@ import io.github.kahme247.ompweb.net.ManagedProject
 import io.github.kahme247.ompweb.net.SessionSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionPlaceholdersTest {
@@ -20,9 +21,9 @@ class SessionPlaceholdersTest {
             activeCwd = null,
         )
 
-        assertEquals(listOf("fresh"), display.map { it.id })
-        assertEquals("/work/app", display.single().cwd)
-        assertEquals("/work/app", display.single().projectRoot)
+        assertEquals(listOf("fresh"), display.sessions.map { it.id })
+        assertEquals("/work/app", display.sessions.single().cwd)
+        assertEquals("/work/app", display.sessions.single().projectRoot)
     }
 
     @Test
@@ -36,8 +37,8 @@ class SessionPlaceholdersTest {
             activeCwd = "/work/active",
         )
 
-        assertEquals("/work/other", display.single().cwd)
-        assertEquals("/work/other", display.single().projectRoot)
+        assertEquals("/work/other", display.sessions.single().cwd)
+        assertEquals("/work/other", display.sessions.single().projectRoot)
     }
 
     @Test
@@ -52,9 +53,40 @@ class SessionPlaceholdersTest {
             activeCwd = null,
         )
 
-        assertEquals(listOf("known", "fresh"), display.map { it.id })
-        val projects = withWorkspaceProjects(listOf(ManagedProject(path = "/work/app")), display)
+        assertEquals(listOf("known", "fresh"), display.sessions.map { it.id })
+        val projects = withPlaceholderProjects(listOf(ManagedProject(path = "/work/app")), display)
         assertEquals(listOf("/work/app", "/work/lonely"), projects.map { it.path })
+    }
+
+    @Test
+    fun `a hidden project does not come back from its still-listed sessions`() {
+        // Hiding only marks the registry entry: `GET /api/projects` no longer
+        // lists the project, but `GET /api/sessions` keeps returning its
+        // sessions. The project list is the server's, so nothing may be derived
+        // from a file-backed session — otherwise the row the user just hid
+        // reappears from the sessions hiding deliberately leaves on disk.
+        val sessions = listOf(
+            SessionSummary(
+                id = "s1",
+                path = "/home/u/.omp/sessions/s1.jsonl",
+                cwd = "C:\\Work\\Hidden",
+                projectRoot = "C:\\Work\\Hidden",
+                projectKey = "c:\\work\\hidden",
+            ),
+        )
+        val display = withLivePlaceholders(
+            sessions = sessions,
+            runningIds = emptySet(),
+            runningCwds = emptyMap(),
+            exited = emptyMap(),
+            projects = emptyList(),
+            activeCwd = null,
+        )
+
+        val projects = withPlaceholderProjects(emptyList(), display)
+
+        assertTrue("a file-backed session is not a placeholder", display.placeholders.isEmpty())
+        assertEquals(emptyList<ManagedProject>(), projects)
     }
 
     @Test
@@ -68,7 +100,7 @@ class SessionPlaceholdersTest {
             activeCwd = "/work/active",
         )
 
-        assertEquals("/work/active", display.single().cwd)
+        assertEquals("/work/active", display.sessions.single().cwd)
     }
 
     @Test
@@ -82,6 +114,6 @@ class SessionPlaceholdersTest {
             activeCwd = null,
         )
 
-        assertNull(display.single().projectRoot)
+        assertNull(display.sessions.single().projectRoot)
     }
 }

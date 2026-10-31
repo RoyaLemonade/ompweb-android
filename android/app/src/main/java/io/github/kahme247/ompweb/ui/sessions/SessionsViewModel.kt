@@ -727,7 +727,7 @@ class SessionsViewModel(
      * always name the same project.
      */
     private fun orderedDisplayProjects(state: SessionsUiState): List<ManagedProject> {
-        val displaySessions = withLivePlaceholders(
+        val display = withLivePlaceholders(
             sessions = state.sessions,
             runningIds = state.runningIds,
             runningCwds = state.runningCwds,
@@ -736,16 +736,16 @@ class SessionsViewModel(
             activeCwd = state.activeCwd,
         )
         val activities = projectActivityCounts(
-            sessions = displaySessions,
+            sessions = display.sessions,
             runningIds = state.runningIds + state.elsewhere.keys,
             unreadIds = state.unreadIds,
             exitedIds = state.exited.keys,
         )
         return orderProjectsByActivity(
-            projects = withWorkspaceProjects(state.projects, displaySessions),
+            projects = withPlaceholderProjects(state.projects, display),
             pinnedPaths = state.pinnedProjectPaths,
             runningProjects = activities.filterValues { it.running > 0 }.keys,
-            lastActivity = projectLastActivity(displaySessions),
+            lastActivity = projectLastActivity(display.sessions),
         )
     }
 

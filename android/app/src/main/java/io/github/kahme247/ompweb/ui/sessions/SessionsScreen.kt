@@ -1136,7 +1136,7 @@ internal fun SessionListPane(
     }
 
     val filterActive = state.searchQuery.isNotBlank() || state.runningOnly
-    val displaySessions = remember(
+    val display = remember(
         state.sessions,
         state.runningIds,
         state.runningCwds,
@@ -1153,8 +1153,9 @@ internal fun SessionListPane(
             activeCwd = state.activeCwd,
         )
     }
-    val displayProjects = remember(state.projects, displaySessions) {
-        withWorkspaceProjects(state.projects, displaySessions)
+    val displaySessions = display.sessions
+    val displayProjects = remember(state.projects, display) {
+        withPlaceholderProjects(state.projects, display)
     }
     val allGrouped = remember(displayProjects, displaySessions) {
         groupSessionsByProject(displayProjects, displaySessions)
