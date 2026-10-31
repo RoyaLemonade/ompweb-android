@@ -1664,9 +1664,12 @@ internal fun SessionListPane(
                                     val defaultKey = comparableProjectPath(
                                         state.activeCwd ?: orderedProjects.firstOrNull()?.path.orEmpty(),
                                     )
-                                    val expanded = filterActive ||
+                                    // Filters narrow the rows, never the
+                                    // expansion: an active chip or search term
+                                    // must not override the chevron.
+                                    val expanded =
                                         state.expandedProjects?.contains(expandedKey) == true ||
-                                        (state.expandedProjects == null && expandedKey == defaultKey)
+                                            (state.expandedProjects == null && expandedKey == defaultKey)
                                     ProjectBlock(
                                         project = project,
                                         allProjectSessions = allGrouped[project.path].orEmpty(),

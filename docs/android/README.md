@@ -85,9 +85,14 @@ three.
 
 Pinned sessions and projects ignore the filters: a pin is your explicit
 choice, so their shortcut rows stay at the top. Projects whose sessions all
-fail the filters collapse while a chip is active; the row at the bottom says
-how many sessions are hidden and offers **Clear filters**. The chosen chips
-are remembered per server and are forgotten on sign-out, like the pins.
+fail the filters disappear from the list while a chip is active; the row at
+the bottom says how many sessions are hidden and offers **Clear filters**. The
+chosen chips are remembered per server and are forgotten on sign-out, like the
+pins.
+
+Filters never change how a project is unfolded: the chevron still collapses
+and expands its matching sessions, and the five-row **Show more** limit keeps
+counting the rows the filters left in the tree.
 
 ## Writing in the chat
 

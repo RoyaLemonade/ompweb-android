@@ -145,7 +145,9 @@ internal fun ProjectBlock(
     val childIds = remember(allProjectSessions) {
         allProjectSessions.mapNotNull { it.parentSessionId }.toSet()
     }
-    val shownRoots = if (filterActive || showAllRoots) roots else roots.take(MAX_PROJECT_SESSIONS)
+    // The cap counts matching rows: a filter narrows the tree, it does not
+    // lift the five-root limit (the web behaves the same).
+    val shownRoots = if (showAllRoots) roots else roots.take(MAX_PROJECT_SESSIONS)
 
     Column(
         modifier = Modifier
@@ -282,7 +284,7 @@ internal fun ProjectBlock(
                         onCopyId = onCopyId,
                     )
                 }
-                if (!filterActive && roots.size > MAX_PROJECT_SESSIONS) {
+                if (roots.size > MAX_PROJECT_SESSIONS) {
                     TextButton(
                         onClick = { showAllRoots = !showAllRoots },
                         modifier = Modifier.padding(start = 24.dp, bottom = 4.dp),
