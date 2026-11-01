@@ -85,6 +85,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import io.github.kahme247.ompweb.chat.ChatDisplayPrefs
 import io.github.kahme247.ompweb.chat.ChatNotice
 import io.github.kahme247.ompweb.chat.ContentionCopy
@@ -221,6 +222,12 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
+    // The screen's own lifecycle state: the live-rate ticker and the chat's
+    // reconcile poll must not run behind the lock screen.
+    val screenStarted = lifecycleOwner.lifecycle
+        .currentStateAsState()
+        .value
+        .isAtLeast(Lifecycle.State.STARTED)
     // Resolved during composition: reading resources from the context inside a
     // coroutine can return a stale configuration.
     val forkCancelledText = stringResource(R.string.chat_fork_cancelled)
@@ -237,7 +244,14 @@ fun ChatScreen(
     LaunchedEffect(Unit) { viewModel.prepareSpeech() }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.onForeground()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.onForeground()
+                // The chat's 2–60 s reconcile poll belongs to a visible screen
+                // (battery audit P2); the service's notifications channel keeps
+                // alerts flowing while this is stopped.
+                Lifecycle.Event.ON_STOP -> viewModel.onBackground()
+                else -> Unit
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
@@ -288,8 +302,10 @@ fun ChatScreen(
     // Live tokens/s is derived from the newest frame; without a tick a stalled
     // stream would keep its last number until the next frame. Web runs the same
     // 500 ms interval (useStreamRate) and hides the value after 2 s of silence.
-    LaunchedEffect(viewModel, ui.engine.streamingActive) {
-        if (!ui.engine.streamingActive) return@LaunchedEffect
+    // Only while the screen is STARTED: a streaming run behind the lock screen
+    // wins nothing from a 2 Hz repaint.
+    LaunchedEffect(viewModel, ui.engine.streamingActive, screenStarted) {
+        if (!ui.engine.streamingActive || !screenStarted) return@LaunchedEffect
         while (true) {
             delay(STREAM_RATE_PUBLISH_MS)
             viewModel.refreshLiveRate()

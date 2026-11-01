@@ -711,6 +711,28 @@ fun runningSessionCount(value: JsonObject): Int? = (value["runningSessionIds"] a
 fun nextPresenceSeq(previous: Long, nowMillis: Long): Long =
     if (nowMillis > previous) nowMillis else previous + 1
 
+/** The server drops a presence entry this long after its last report (`PRESENCE_TTL_MS`). */
+const val PRESENCE_TTL_MILLIS = 60_000L
+
+/**
+ * The service's presence keep-alive. A native device has no push subscription,
+ * so the server addresses its in-page `os` and `dismiss` frames through the
+ * presence entry (`routeNotification` rule 3); the beat has to stay clearly
+ * under [PRESENCE_TTL_MILLIS] to survive a slightly late request. 45 s leaves
+ * 15 s of margin without the old 30 s cadence.
+ */
+const val PRESENCE_KEEPALIVE_MILLIS = 45_000L
+
+/**
+ * A report that failed is retried this early: one lost report must not let the
+ * entry expire before the next regular beat.
+ */
+const val PRESENCE_RETRY_MILLIS = 30_000L
+
+/** Distance to the next presence report: the regular beat, or the retry after a failure. */
+fun nextPresenceDelayMillis(delivered: Boolean): Long =
+    if (delivered) PRESENCE_KEEPALIVE_MILLIS else PRESENCE_RETRY_MILLIS
+
 private fun JsonObject.string(key: String): String? =
     (this[key] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.contentOrNull
 

@@ -491,6 +491,19 @@ class NotificationsTest {
     }
 
     @Test
+    fun `the presence keep-alive stays under the server TTL`() {
+        // The server drops the entry after 60 s; a native device has no push
+        // subscription and is only addressed through that entry.
+        assertTrue("the beat keeps the entry fresh", nextPresenceDelayMillis(true) < PRESENCE_TTL_MILLIS)
+        assertEquals(PRESENCE_KEEPALIVE_MILLIS, nextPresenceDelayMillis(true))
+        assertEquals("a failed report comes back sooner", PRESENCE_RETRY_MILLIS, nextPresenceDelayMillis(false))
+        assertTrue(
+            "one lost report is caught up before the entry expires",
+            nextPresenceDelayMillis(false) < PRESENCE_KEEPALIVE_MILLIS,
+        )
+    }
+
+    @Test
     fun `a visible chat needs the detail pane and no overlay`() {
         assertEquals(
             "s1",

@@ -314,7 +314,11 @@ Der Browser-Worker (`public/event-stream-worker.js`) ist die Referenz:
 1. `hello` → `connectionId` merken und **alle** Subscriptions erneut per POST
    anmelden (`:111-116`).
 2. Verbindungsabbruch: eigener Reconnect mit Backoff 1 s → 30 s
-   (`:26-28,71-79`); `hello` setzt den Backoff auf 1 s zurück.
+   (`:26-28,71-79`); `hello` setzt den Backoff auf 1 s zurück. Die Android-App
+   deckelt nur im Vordergrund bei 30 s (`events/Backoff.kt`); im Hintergrund
+   wächst der Abstand bis 5 min, weil ein ausgeschalteter Rechner sonst den
+   Funk dauerhaft weckt. Rückkehr in den Vordergrund und ein
+   `onAvailable`-Callback des Netzes versuchen sofort neu.
 3. `end` einer Subscription: nach 3 s neu abonnieren (`:122-128`).
 4. Subscribe-POST scheitert mit `unknown_connection`: Verbindung neu aufbauen.
    Mit `409`/`403`/`404`: Subscription ist fatal, Flow mit Fehler beenden;
@@ -1099,6 +1103,13 @@ private Shell-Ausgaben nie in den Modellkontext gelangen.
   `hooks/useAgentSession-stream.ts:264`). Ein laufender Request wird
   über `reconcileGuardRef` koalesziert; nach Abschluss wird bei Bedarf
   nachgeholt (`reconcileAgentState`).
+- Die Android-App pollt nur, solange der Chat **sichtbar** ist
+  (`ChatViewModel.onForeground`/`onBackground` und `onChatVisible`/
+  `onChatHidden`): im Hintergrund läuft kein Timer, die Sitzungsframes
+  halten den Verlauf aktuell, Meldungen kommen über den `notifications`-
+  Kanal des Vordergrunddienstes, und die Rückkehr in den Vordergrund
+  reconciled einmal sofort (`ui/chat/ChatViewModel.kt`). Der 500-ms-Ticker
+  für die Token-Rate hängt ebenfalls an `STARTED` (`ui/chat/ChatScreen.kt`).
 - Nach dem Senden wartet der Client auf den Run: erster Check nach 800 ms,
   dann alle 600 ms, maximal 20 s (`PROMPT_SETTLE_*`,
   `hooks/useAgentSession-stream.ts:261-263`).
@@ -1283,6 +1294,18 @@ nichts. Punkt 1 gilt geräteübergreifend und unabhängig von den Prefs.
 
 Presence gilt 60 s nach dem letzten Report (`PRESENCE_TTL_MS`,
 `lib/notification-hub.ts:18-19`). Der Stream selbst ist „reachable“.
+
+Für die Android-App ist der Presence-Eintrag deshalb **nicht** nur die
+Unterdrückung des gelesenen Chats (Regel 1): sie hat keine Push-Subscription,
+also adressiert Regel 3 ihre `os`- und `dismiss`-Frames ausschließlich über
+`presence` × `reachable`. Der Vordergrunddienst hält den Eintrag daher mit
+45 s unter der TTL frisch (`domain/Notifications.kt`,
+`nextPresenceDelayMillis`; ein fehlgeschlagener Report wird nach 30 s
+wiederholt) und sendet nur, solange der Stream verbunden ist. Zustandswechsel
+(Foreground, sichtbarer Chat, Chat verlassen) gehen sofort raus, mit
+monotonem `seq`. Ohne Presence-Eintrag wäre das Gerät im Hintergrund für
+`os`-Frames unerreichbar — der Grund, warum erst eine Protokollerweiterung
+(Geräte-ID an der Subscription) oder echtes Push den Keep-alive ersparen kann.
 
 Push-Payload (`lib/notification-hub.ts:170-182`, `lib/notification-events.ts:96-134`):
 

@@ -353,6 +353,62 @@ class EventMuxTest {
     }
 
     @Test
+    fun `a process without a window uses the background cap from the start`() = runTest {
+        // The service-only process (boot, swipe-away) never reports a
+        // foreground window: a dead server must not be retried every 30 s all
+        // night just because no lifecycle callback ever arrived.
+        transport.failOpens = 1_000
+        val mux = EventMux(
+            transport = transport,
+            scope = backgroundScope,
+            backoff = Backoff(baseMillis = 1_000, maxMillis = 2_000, backgroundMaxMillis = 8_000, jitterRatio = 0.0),
+            clock = { testScheduler.currentTime },
+        )
+        mux.setPersistent(true)
+        backgroundScope.launch { mux.subscribe(EventChannel.Running).collect {} }
+        runCurrent()
+
+        advanceTimeBy(15_500)
+        runCurrent()
+        assertEquals(5, transport.openCalls)
+    }
+
+    @Test
+    fun `a backgrounded mux backs off to the background cap and wakes on return`() = runTest {
+        // Foreground cap 2 s, background cap 8 s, no jitter: the open attempts
+        // alone show which cap the loop used.
+        transport.failOpens = 1_000
+        val mux = EventMux(
+            transport = transport,
+            scope = backgroundScope,
+            backoff = Backoff(baseMillis = 1_000, maxMillis = 2_000, backgroundMaxMillis = 8_000, jitterRatio = 0.0),
+            clock = { testScheduler.currentTime },
+        )
+        // The notification service keeps the stream open while backgrounded.
+        mux.setPersistent(true)
+        // A window is reported before the first subscription: the foreground
+        // cap applies until the app actually leaves.
+        mux.onForeground()
+        backgroundScope.launch { mux.subscribe(EventChannel.Running).collect {} }
+        runCurrent()
+        assertEquals("the first attempt", 1, transport.openCalls)
+
+        mux.onBackground()
+        runCurrent()
+        // 1 s, 2 s, 4 s, 8 s: five attempts within 15 s. The foreground cap
+        // alone would already have made nine.
+        advanceTimeBy(15_500)
+        runCurrent()
+        assertEquals(5, transport.openCalls)
+
+        // The user is back: the next attempt may not wait out the background
+        // sleep it would otherwise sit in.
+        mux.onForeground()
+        runCurrent()
+        assertEquals(6, transport.openCalls)
+    }
+
+    @Test
     fun `leaving the foreground disconnects and returning reconnects`() = runTest {
         val mux = mux()
         backgroundScope.launch { mux.subscribe(EventChannel.Running).collect {} }

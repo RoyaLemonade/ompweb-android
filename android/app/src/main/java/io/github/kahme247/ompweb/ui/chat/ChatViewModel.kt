@@ -104,6 +104,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -414,6 +415,30 @@ class ChatViewModel(
     private var sessionId: String? = null
     private var cwd: String? = null
 
+    /**
+     * The chat surface is composed ([onChatVisible]/[onChatHidden]); false
+     * while the list or another screen covers it.
+     */
+    private var chatSurfaceVisible = false
+
+    /**
+     * The activity is started ([onForeground] on resume, [onBackground] on
+     * stop). Seeds to true: the view model is created by the running activity,
+     * and the stop callback arrives for every trip to the background.
+     */
+    private var activityStarted = true
+
+    /**
+     * Both gates at once: the periodic reconcile poll only runs while the user
+     * can actually see this chat. It is the awaits-until-true signal of that
+     * loop, so a hidden chat really has no timer running.
+     */
+    private val chatOnScreen = MutableStateFlow(false)
+
+    private fun updateChatOnScreen() {
+        chatOnScreen.value = activityStarted && chatSurfaceVisible
+    }
+
     /** Names warned about once ("unknown slash command sent as text"). */
     private val warnedSlashCommands = HashSet<String>()
     /** One queue mutation (edit/delete/steer) at a time, like the web's guard. */
@@ -593,9 +618,17 @@ class ChatViewModel(
             // unknown there is no stream that would correct it, so the loop
             // asks again — with a growing delay, so an offline device does not
             // poll every few seconds. A known state polls only a busy run.
+            //
+            // Only a chat the user can see polls. Without a UI the stream is
+            // the source of truth (it keeps the transcript current), the
+            // foreground service's notifications channel delivers alerts, and
+            // [onForeground] reconciles once on the way back. Waiting on the
+            // gate costs no timer and no request, so a chat left open behind
+            // the lock screen no longer asks the server anything.
             var unknownBackoff = RECONCILE_UNKNOWN_FIRST_MILLIS
             var polledSession: String? = null
             while (isActive) {
+                chatOnScreen.first { it }
                 val current = engine.state.value
                 if (sessionId != polledSession) {
                     polledSession = sessionId
@@ -613,6 +646,7 @@ class ChatViewModel(
                         else -> RECONCILE_MILLIS
                     },
                 )
+                if (!chatOnScreen.value) continue
                 if (!known) {
                     unknownBackoff = minOf(unknownBackoff * 2, RECONCILE_UNKNOWN_MAX_MILLIS)
                     // Read here instead of launching: the answer is also what
@@ -1689,6 +1723,9 @@ class ChatViewModel(
      */
     fun onChatVisible() {
         val sid = sessionId ?: return
+        // Re-arms the reconcile poll of a chat that comes back on screen.
+        chatSurfaceVisible = true
+        updateChatOnScreen()
         hostTools.setViewedSession(sid)
         extensionUi.bind(sid)
         btw.bind(sid)
@@ -1706,6 +1743,9 @@ class ChatViewModel(
      * change, and [clearSessionData] wipes them.
      */
     fun onChatHidden() {
+        // The chat is gone from the stage: its poll goes with it.
+        chatSurfaceVisible = false
+        updateChatOnScreen()
         hostTools.setViewedSession(null)
         extensionUi.bind(null)
         btw.bind(null)
@@ -2541,9 +2581,28 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * The activity resumed: the chat polls may run again and the transcript is
+     * reconciled once right away — a chat that was in the background for
+     * minutes must not wait for the next interval.
+     */
     fun onForeground() {
+        activityStarted = true
+        updateChatOnScreen()
         requestHistory(reset = false)
         reconcileNow()
+    }
+
+    /**
+     * The activity stopped (home, an overlay, the screen locked). The periodic
+     * reconcile belongs to a visible chat: it pauses here instead of asking the
+     * server every 2–60 s from behind the lock screen. Nothing is lost — the
+     * session channel keeps the transcript current, notifications arrive on the
+     * service's channel, and [onForeground] reconciles once on return.
+     */
+    fun onBackground() {
+        activityStarted = false
+        updateChatOnScreen()
     }
 
     // ---------------------------------------------------------------- history

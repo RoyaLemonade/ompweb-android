@@ -331,6 +331,40 @@ class NotificationCenterTest {
     }
 
     @Test
+    fun `going to the background reports visible false at once`() = runBlocking {
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+        center.presenceReport()
+        val before = api.presence.size
+
+        // Screen off or home: the server's `isOnScreen` suppression must end in
+        // the same moment the chat leaves the screen, not one TTL later.
+        center.setAppForeground(false)
+
+        assertEquals("one report per transition", before + 1, api.presence.size)
+        val last = requireNotNull(api.presence.lastOrNull())
+        assertFalse("no longer on screen", last.visible)
+        assertNull("the session is released", last.sessionId)
+    }
+
+    @Test
+    fun `an unchanged window state sends no further report`() = runBlocking {
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+        val after = api.presence.size
+
+        // Re-composition, a resumed activity, a chat re-reported: nothing
+        // changed for the server, so nothing is sent. The periodic keep-alive
+        // of the running service is the only other report.
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+
+        assertEquals(after, api.presence.size)
+    }
+
+    @Test
     fun `a foreground in-app notice pulses the event waveform`() {
         center.setAppForeground(true)
         deliver(notificationFrame(kind = "toast", type = "input"))

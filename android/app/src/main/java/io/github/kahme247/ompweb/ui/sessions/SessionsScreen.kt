@@ -114,7 +114,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.kahme247.ompweb.ui.theme.OmpDialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.data.ChatDraft
@@ -1153,8 +1156,16 @@ internal fun SessionListPane(
     var themePickerOpen by remember { mutableStateOf(false) }
     val colors = LocalOmpColors.current
 
-    // Relative times must age while the list is open.
-    val now by produceState(initialValue = Instant.now()) {
+    // Relative times must age while the list is open — and only then: a
+    // backgrounded list has no one reading it, and a minute tick behind the
+    // lock screen is a CPU wake for nothing (battery audit, B3 twin).
+    val listStarted = LocalLifecycleOwner.current.lifecycle
+        .currentStateAsState()
+        .value
+        .isAtLeast(Lifecycle.State.STARTED)
+    val now by produceState(initialValue = Instant.now(), listStarted) {
+        value = Instant.now()
+        if (!listStarted) return@produceState
         while (true) {
             delay(60_000)
             value = Instant.now()

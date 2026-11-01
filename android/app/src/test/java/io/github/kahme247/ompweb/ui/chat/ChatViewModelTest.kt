@@ -772,6 +772,56 @@ class ChatViewModelTest {
         )
     }
 
+    @Test
+    fun `a backgrounded chat stops polling and reconciles once on return`() = chatTest {
+        createViewModel()
+        // A failed live-state read keeps the loop on its most aggressive
+        // cadence (3 s → 60 s): without the gate it would ask again at once.
+        api.agentStateFailure = ApiError.Network(java.io.IOException("offline"))
+        vm.open("s1", null)
+        runCurrent()
+        assertFalse("the state is unknown, so the loop is armed", vm.ui.value.engine.liveStateKnown)
+        val callsWhileVisible = api.agentStateCalls
+
+        // Home button / screen off: the reconcile poll belongs to a visible
+        // chat (battery audit P2). Notifications keep arriving on the
+        // foreground service's channel, and the session stream still updates
+        // the transcript — only this loop stops.
+        vm.onBackground()
+        runCurrent()
+        advanceTimeBy(60_001)
+        runCurrent()
+        assertEquals("no request without a UI", callsWhileVisible, api.agentStateCalls)
+
+        api.agentStateFailure = null
+        vm.onForeground()
+        runCurrent()
+        assertTrue("the return reconciles at once", api.agentStateCalls > callsWhileVisible)
+    }
+
+    @Test
+    fun `a chat that left the stage stops polling too`() = chatTest {
+        createViewModel()
+        api.agentStateFailure = ApiError.Network(java.io.IOException("offline"))
+        vm.open("s1", null)
+        runCurrent()
+        val calls = api.agentStateCalls
+
+        // Back to the list: the chat surface is disposed, the view model is not.
+        // Its poll must not keep asking for a chat nobody sees.
+        vm.onChatHidden()
+        runCurrent()
+        advanceTimeBy(60_001)
+        runCurrent()
+        assertEquals("leaving the chat ends its poll", calls, api.agentStateCalls)
+
+        // Re-entering the composition re-arms the loop (`open` calls this).
+        vm.onChatVisible()
+        advanceTimeBy(60_001)
+        runCurrent()
+        assertTrue("the poll resumes with the surface", api.agentStateCalls > calls)
+    }
+
     /**
      * Opening a chat whose omp child is blocked by a large session answers 503
      * `session_slow` for the state read (web `loadSession`'s bug): the disk

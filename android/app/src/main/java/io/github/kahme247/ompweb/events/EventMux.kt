@@ -99,6 +99,24 @@ class EventMux(
     /** Set by the notification service: backgrounding the app must not drop the stream. */
     private var persistent = false
 
+    /**
+     * Between [onBackground] and [onForeground]; only widens the reconnect cap
+     * (see [Backoff]). Nothing else depends on it. True until a foreground
+     * window is reported: a process that only exists for the notification
+     * service (boot, swipe-away, `START_STICKY`) never sees a lifecycle
+     * callback, and it is exactly the one that must not hammer a dead server.
+     */
+    private var background = true
+
+    /**
+     * Reconnect attempts since the last healthy connection. It lives on the mux
+     * instead of inside [connectionLoop] so [onForeground] can start the count
+     * over: a backgrounded loop may sleep five minutes, and the user who just
+     * opened the app waits for the next attempt.
+     */
+    @Volatile
+    private var retryAttempt = 0
+
     /** When the last connection attempt started; rate-limits network-triggered retries. */
     private var lastRetryAt: Long? = null
 
@@ -137,17 +155,28 @@ class EventMux(
         }
     }
 
-    /** Called when the app returns to the foreground. */
+    /**
+     * Called when the app returns to the foreground. The reconnect delay drops
+     * back to the foreground cap, and a loop that is sleeping out a background
+     * backoff (up to five minutes) is restarted right away — the user is
+     * looking at the app now. A live stream is never torn down for this.
+     */
     fun onForeground() {
-        synchronized(lock) {
+        val wasBackground = synchronized(lock) {
+            val previous = background
+            background = false
             backgroundJob?.cancel()
             backgroundJob = null
+            previous
         }
-        if (hasSubscriptions()) connectNow()
+        retryAttempt = 0
+        if (!hasSubscriptions()) return
+        if (wasBackground && state.value != ConnectionState.Connected) retryNow() else connectNow()
     }
 
     /** Called when the app leaves the foreground; disconnects after a grace period. */
     fun onBackground() {
+        synchronized(lock) { background = true }
         if (synchronized(lock) { persistent }) return
         if (!hasSubscriptions()) return
         synchronized(lock) {
@@ -283,10 +312,11 @@ class EventMux(
 
     private fun hasSubscriptions(): Boolean = synchronized(lock) { active.isNotEmpty() }
 
+    private fun isBackground(): Boolean = synchronized(lock) { background }
+
     private fun ownsConnection(owner: Long): Boolean = synchronized(lock) { loopGeneration == owner }
 
     private suspend fun connectionLoop(owner: Long) {
-        var attempt = 0
         while (true) {
             if (!hasSubscriptions()) break
             if (!ownsConnection(owner)) return
@@ -314,7 +344,7 @@ class EventMux(
                                     acknowledged.clear()
                                 }
                                 noteFrame()
-                                attempt = 0
+                                retryAttempt = 0
                                 _state.value = ConnectionState.Connected
                                 pumpSubscriptions()
                             }
@@ -355,7 +385,7 @@ class EventMux(
             if (!hasSubscriptions()) break
             if (!ownsConnection(owner)) return
             _state.value = ConnectionState.Reconnecting
-            delay(backoff.delayMillis(attempt++))
+            delay(backoff.delayMillis(retryAttempt++, background = isBackground()))
         }
         if (ownsConnection(owner)) _state.value = ConnectionState.Offline
     }

@@ -23,6 +23,7 @@ import io.github.kahme247.ompweb.domain.NotifyWhenActive
 import io.github.kahme247.ompweb.domain.PresenceReport
 import io.github.kahme247.ompweb.domain.inAppNotice
 import io.github.kahme247.ompweb.domain.isValidNotificationId
+import io.github.kahme247.ompweb.domain.nextPresenceDelayMillis
 import io.github.kahme247.ompweb.domain.nextPresenceSeq
 import io.github.kahme247.ompweb.domain.noticeRoute
 import io.github.kahme247.ompweb.domain.noticeRouteAfterPost
@@ -49,6 +50,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -299,11 +301,17 @@ class NotificationCenter(
                 }
                 presenceJob = scope.launch {
                     while (isActive) {
-                        reportPresence()
-                        delay(PRESENCE_INTERVAL_MILLIS)
+                        // A report is only usable while the server can reach this
+                        // tab: a device without a push subscription is addressed
+                        // through its presence entry, and the entry only matters
+                        // through the open stream. Waiting here sends no traffic
+                        // while the server is down or Doze holds the socket, and
+                        // it refreshes the entry right after every reconnect.
+                        mux.state.first { it == ConnectionState.Connected }
+                        val delivered = reportPresenceNow()
+                        delay(nextPresenceDelayMillis(delivered))
                     }
                 }
-                reportPresence()
             }
         }
     }
@@ -398,6 +406,10 @@ class NotificationCenter(
      * activation (and after it was asked to stop), and the server must know
      * either way — a report that is dropped here leaves it routing `os`
      * frames for the chat the user is reading.
+     *
+     * Every state *change* goes through here; the periodic keep-alive lives in
+     * [activateRuntime] and needs the answer, so it uses [reportPresenceNow]
+     * instead.
      */
     private fun reportPresence() {
         // A device that turned notifications off is not a notification client;
@@ -405,6 +417,25 @@ class NotificationCenter(
         if (!settings.snapshot.value.notifyPrefs.enabled) return
         val report = presenceReport() ?: return
         scope.launch { api.reportPresence(report) }
+    }
+
+    /**
+     * One report, awaited. False when it never reached the server (no identity,
+     * notifications off, network); the keep-alive then retries early instead of
+     * waiting a full interval, because the server drops an entry that is older
+     * than its TTL and this device would be unreachable in that window.
+     */
+    private suspend fun reportPresenceNow(): Boolean {
+        if (!settings.snapshot.value.notifyPrefs.enabled) return false
+        val report = presenceReport() ?: return false
+        return try {
+            api.reportPresence(report)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
@@ -669,9 +700,6 @@ class NotificationCenter(
     }
 
     companion object {
-        /** The server's presence TTL is 60 s; report at half of it. */
-        const val PRESENCE_INTERVAL_MILLIS = 30_000L
-
         /**
          * At most this many notices stay on screen; a new one pushes the
          * oldest out instead of growing the overlay without bound.
