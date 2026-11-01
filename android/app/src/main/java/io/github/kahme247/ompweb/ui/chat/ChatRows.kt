@@ -492,6 +492,10 @@ private fun UserRow(
                 if (showFork && forkTarget != null) {
                     ForkAction(state, forkTarget, callbacks)
                 }
+                // When the message was sent, at the end of the row: the row's
+                // buttons alone never said when this turn happened.
+                Spacer(Modifier.weight(1f))
+                TimestampLabel(message.timestamp, row = true)
             }
         }
     }
@@ -700,6 +704,10 @@ internal fun AssistantRow(
                         maxLines = 1,
                     )
                 }
+                // When the answer arrived, at the end of the row; a row with a
+                // rate keeps the rate first, so the two flush right together.
+                if (speed == null) Spacer(Modifier.weight(1f))
+                TimestampLabel(message.timestamp, row = true)
             }
         }
     }
@@ -2027,17 +2035,22 @@ internal fun SpeakerHeaderRow(speaker: Speaker, timestamp: Long?) {
 
 /**
  * A timestamp in the transcript. Tapping it shows the full date and time: the
- * header uses the short shape (today `HH:mm`, yesterday `Yesterday HH:mm`, this
- * year `d MMM, HH:mm`), which cannot carry a weekday or a year.
+ * short shape (`09:41`, `Yesterday 09:41`, `26 Oct, 09:41`) cannot carry a
+ * weekday, a year or — in the header's older-year form — the clock time.
+ *
+ * [row] selects the stamp of a message's action row ([ChatTimeFormatter.rowStamp])
+ * instead of the speaker header's ([ChatTimeFormatter.header]).
  */
 @Composable
-private fun TimestampLabel(timestamp: Long?) {
+private fun TimestampLabel(timestamp: Long?, row: Boolean = false) {
     if (timestamp == null) return
     val colors = LocalOmpColors.current
     val formatter = rememberChatTimeFormatter()
     val clock = LocalChatClock.current
     val now = LocalChatNow.current ?: clock()
-    val formatted = remember(timestamp, now, formatter) { formatter.header(timestamp, now) }
+    val formatted = remember(timestamp, now, formatter, row) {
+        if (row) formatter.rowStamp(timestamp, now) else formatter.header(timestamp, now)
+    }
     var full by remember(timestamp) { mutableStateOf(false) }
     Text(
         text = formatted,

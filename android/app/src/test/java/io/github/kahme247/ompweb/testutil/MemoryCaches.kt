@@ -1,8 +1,30 @@
 package io.github.kahme247.ompweb.testutil
 
 import io.github.kahme247.ompweb.data.CachedSessionList
+import io.github.kahme247.ompweb.data.SessionActivity
 import io.github.kahme247.ompweb.data.SessionListCache
 import io.github.kahme247.ompweb.data.TranscriptCache
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+
+/** In-memory [SessionActivity] with the store's monotonic rule. */
+class MemorySessionActivity : SessionActivity {
+
+    private val _known = MutableStateFlow<Map<String, Long>>(emptyMap())
+    override val known: StateFlow<Map<String, Long>> = _known
+
+    override fun record(sessionId: String, at: Long) {
+        if (sessionId.isBlank() || at <= 0) return
+        val previous = _known.value[sessionId]
+        if (previous != null && previous >= at) return
+        _known.update { it + (sessionId to at) }
+    }
+
+    override fun clear() {
+        _known.value = emptyMap()
+    }
+}
 
 /**
  * In-memory [TranscriptCache] for the JVM tests: the same key rules as the

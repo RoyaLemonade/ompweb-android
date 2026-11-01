@@ -81,7 +81,9 @@ three.
   already showed, an unread entry in the notification list, or a blocking
   input dialog that waits for an answer.
 - **Age** — `All`, `Today` (local calendar day), `2 days` or `7 days`, based on
-  the session's last activity. The menu sits behind the chip.
+  the newest message in the chat. Opening or reloading a chat is not activity:
+  omp rewrites the session file on a resume, and the app does not mistake that
+  write for a message. The menu sits behind the chip.
 
 Pinned sessions and projects ignore the filters: a pin is your explicit
 choice, so their shortcut rows stay at the top. Projects whose sessions all

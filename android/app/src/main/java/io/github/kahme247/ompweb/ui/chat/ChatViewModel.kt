@@ -32,6 +32,7 @@ import io.github.kahme247.ompweb.data.expandTemplateCommand
 import io.github.kahme247.ompweb.data.OutboxClaim
 import io.github.kahme247.ompweb.data.OutboxEntry
 import io.github.kahme247.ompweb.data.OutboxStore
+import io.github.kahme247.ompweb.data.SessionActivity
 import io.github.kahme247.ompweb.data.TemplateStore
 import io.github.kahme247.ompweb.data.TranscriptCache
 import io.github.kahme247.ompweb.domain.BashInvocation
@@ -46,6 +47,7 @@ import io.github.kahme247.ompweb.domain.SubmitDuringRunBehavior
 import io.github.kahme247.ompweb.domain.WordGhost
 import io.github.kahme247.ompweb.domain.isClientBuiltinCommand
 import io.github.kahme247.ompweb.domain.isValidSubagentId
+import io.github.kahme247.ompweb.domain.lastConversationAt
 import io.github.kahme247.ompweb.domain.routeComposerSubmission
 import io.github.kahme247.ompweb.domain.validateOutgoingPrompt
 import io.github.kahme247.ompweb.domain.SubagentActivityEvent
@@ -337,6 +339,13 @@ class ChatViewModel(
      */
     private val transcripts: TranscriptCache? = null,
     /**
+     * Where the newest message of this chat is reported. The workspace paints
+     * it as the session's "last used" time, because the server's `modified` is
+     * the session file's mtime — which omp also bumps on a plain resume.
+     * `null` disables the report (JVM tests, subagent panes).
+     */
+    private val activity: SessionActivity? = null,
+    /**
      * Where the transcript cache is read and written. `Dispatchers.IO` in the
      * app; the JVM tests pass their test dispatcher so the seed lands
      * deterministically before the request.
@@ -433,6 +442,9 @@ class ChatViewModel(
     private var rowsCacheSource: List<ChatMessage>? = null
     private var rowsCacheHideThinking = false
     private var rowsCache: List<TranscriptRow> = emptyList()
+    /** Session and message list the last "newest message" report was derived from. */
+    private var activitySession: String? = null
+    private var activitySource: List<ChatMessage>? = null
     /** Last session-file model/thinking forwarded to Slice B's controls. */
     private var lastSessionModelKey: String? = null
     private var lastSessionThinking: String? = null
@@ -1605,6 +1617,8 @@ class ChatViewModel(
         dismissedNotices.clear()
         thinkingCache.clear()
         rowsCacheSource = null
+        activitySession = null
+        activitySource = null
         committedToolResults = emptyMap()
         forkCache = emptyList()
         currentScrollIndex = 0
@@ -1742,6 +1756,8 @@ class ChatViewModel(
         rowsCacheSource = null
         rowsCache = emptyList()
         rowsCacheHideThinking = false
+        activitySession = null
+        activitySource = null
         thinkingCache.clear()
         dismissedNotices.clear()
         committedToolResults = emptyMap()
@@ -3647,6 +3663,18 @@ class ChatViewModel(
         if (state.thinkingLevel != lastSessionThinking) {
             lastSessionThinking = state.thinkingLevel
             controls.onSessionThinking(state.thinkingLevel)
+        }
+        // The workspace shows a session's newest message as its "last used"
+        // time: the server's `modified` is the file's mtime, which omp also
+        // bumps when a chat is merely resumed. Derived on every message-list
+        // change only — `publish` runs for every streamed token.
+        val sessionId = state.sessionId
+        if (activity != null && sessionId != null &&
+            (sessionId != activitySession || state.messages !== activitySource)
+        ) {
+            activitySession = sessionId
+            activitySource = state.messages
+            lastConversationAt(state.messages)?.let { activity.record(sessionId, it) }
         }
         if (rowsCacheSource !== state.messages || rowsCacheHideThinking != preferences.hideThinking) {
             rowsCacheSource = state.messages

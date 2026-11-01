@@ -580,6 +580,27 @@ einen lebenden Wrapper ab (`app/api/sessions/[id]/context/route.ts:80-103`),
 (`app/api/sessions/route.ts:6-31`). `SessionInfo`:
 `{path,id,cwd,name?,created,modified,messageCount}` (`lib/types.ts:437-445`).
 
+`modified` ist **die mtime der Session-Datei**, keine Konversations-Zeit:
+`lib/omp/session-files.ts` liest `statSync(file).mtime` und
+`lib/session-reader.ts:88-89` reicht sie unverändert durch. omp schreibt die
+Datei auch ohne neue Nachricht — ein `--resume` hängt beim Start einen
+`session_exit`-Eintrag an, und Hintergrund-Buchführung (`model_usage`) landet
+ebenfalls darin. Belegt an echten Dateien aus `~/.omp/agent/sessions`: letzte
+Nachricht `05:46:47`, mtime `05:53:48` (`custom:session_exit`), in einem
+anderen Fall 5 h später (`model_usage`). Wer daraus „zuletzt benutzt" ableitet,
+lässt einen Chat beim bloßen Öffnen nach „gerade eben" springen.
+
+Der Android-Client führt deshalb eine eigene, geräteseitige Notiz der neuesten
+User-/Assistant-Nachricht pro Session
+(`android/.../data/SessionActivityStore.kt`,
+`android/.../domain/SessionActivity.kt`) und zeigt sie statt `modified` an;
+ohne Eintrag (Session auf diesem Gerät nie geöffnet) bleibt `modified` die
+Antwort. **Server-Vorschlag:** `SessionInfo.lastMessageAt` (ISO-8601, Zeit der
+letzten `message`-Zeile mit Rolle `user`/`assistant`) aus demselben
+Datei-Scan mitliefern — dann braucht kein Client mehr zu raten, und eine
+Nachricht aus einem anderen Client (Web, Terminal) wäre sofort korrekt
+datiert.
+
 `DELETE /api/sessions/[id]` wartet auf das Ende des Wrappers, löscht Datei und
 Artefakte und antwortet `{ok:true}` (plus `skippedChildren` bei nicht
 umschreibbaren Kindern); ohne Datei `404 session_not_found`

@@ -2,6 +2,7 @@ package io.github.kahme247.ompweb.ui.sessions
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.kahme247.ompweb.data.SessionActivity
 import io.github.kahme247.ompweb.data.SessionListCache
 import io.github.kahme247.ompweb.data.WorkspacePreferences
 import io.github.kahme247.ompweb.domain.NavigationEntry
@@ -15,6 +16,7 @@ import io.github.kahme247.ompweb.domain.projectActivityCounts
 import io.github.kahme247.ompweb.domain.projectLastActivity
 import io.github.kahme247.ompweb.domain.pruneUnread
 import io.github.kahme247.ompweb.domain.transcriptToMarkdown
+import io.github.kahme247.ompweb.domain.withKnownActivity
 import io.github.kahme247.ompweb.domain.workspaceKeyOf
 import io.github.kahme247.ompweb.events.ConnectionState
 import io.github.kahme247.ompweb.events.EventChannel
@@ -189,6 +191,13 @@ data class SessionsUiState(
     val messageSearch: MessageSearchState = MessageSearchState(),
     /** Session ids pinned for the current server origin. */
     val pinnedIds: Set<String> = emptySet(),
+    /**
+     * The newest user/assistant message this device has seen, epoch millis by
+     * session id ([SessionActivity]). The pane replaces the server's file time
+     * (`modified`) with it before it paints a row, the `Age` chip or an
+     * activity order.
+     */
+    val knownActivity: Map<String, Long> = emptyMap(),
     /** Project paths pinned for the current server origin, most recent first. */
     val pinnedProjectPaths: List<String> = emptyList(),
     val runningOnly: Boolean = false,
@@ -239,6 +248,13 @@ class SessionsViewModel(
      * seeding (JVM tests); the container passes the `SessionCacheStore`.
      */
     private val cache: SessionListCache? = null,
+    /**
+     * The newest message this device has seen per session. The row time, the
+     * `Age` chip and both activity orders read it, so a chat that was only
+     * opened (omp writes its session file on a resume) does not claim to be
+     * "just now". `null` disables the correction (JVM tests without a chat).
+     */
+    private val activity: SessionActivity? = null,
     /**
      * Where the cache is read and written. `Dispatchers.IO` in the app; the
      * JVM tests pass their test dispatcher so a seed lands deterministically
@@ -318,6 +334,15 @@ class SessionsViewModel(
     init {
         viewModelScope.launch {
             for (write in preferenceWrites) write()
+        }
+        activity?.let { store ->
+            viewModelScope.launch {
+                store.known.collect { known ->
+                    if (known != _state.value.knownActivity) {
+                        _state.update { it.copy(knownActivity = known) }
+                    }
+                }
+            }
         }
         viewModelScope.launch {
             serverInfo.collect { info ->
@@ -762,7 +787,7 @@ class SessionsViewModel(
      */
     private fun orderedDisplayProjects(state: SessionsUiState): List<ManagedProject> {
         val display = withLivePlaceholders(
-            sessions = state.sessions,
+            sessions = state.sessions.withKnownActivity(state.knownActivity),
             runningIds = state.runningIds,
             runningCwds = state.runningCwds,
             exited = state.exited,

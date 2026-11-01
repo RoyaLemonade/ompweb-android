@@ -19,6 +19,7 @@ import io.github.kahme247.ompweb.data.KeystoreCookieCipher
 import io.github.kahme247.ompweb.data.OriginBoundCookieJar
 import io.github.kahme247.ompweb.data.OriginScopedDraftStore
 import io.github.kahme247.ompweb.data.OutboxStore
+import io.github.kahme247.ompweb.data.SessionActivityStore
 import io.github.kahme247.ompweb.data.SessionCacheStore
 import io.github.kahme247.ompweb.data.SettingsStore
 import io.github.kahme247.ompweb.data.TemplateStore
@@ -275,6 +276,17 @@ class AppContainer(context: Context) {
      * deleted by [clearLocalUserData] on logout, a server switch and a 401.
      */
     val sessionCache = SessionCacheStore(File(appContext.filesDir, SESSION_CACHE_DIR))
+
+    /**
+     * The newest message this device has seen per session, so a chat that was
+     * only opened (omp rewrites its file on a resume) does not report itself as
+     * "just now". Written by the chat screen, read by the workspace; dropped by
+     * [clearLocalUserData] with the rest of the installation.
+     */
+    val sessionActivity = SessionActivityStore(
+        File(appContext.filesDir, SessionActivityStore.FILE_NAME),
+        appScope,
+    )
 
     /**
      * Messages whose send never left the device (offline), one queue per server
@@ -551,6 +563,8 @@ class AppContainer(context: Context) {
         // The list and the transcripts belong to the installation that is being
         // left: nothing of it may paint the next server's workspace.
         withContext(Dispatchers.IO) { sessionCache.clearAll() }
+        // Last-used times name session ids of that installation as well.
+        sessionActivity.clear()
         // Same rule for the heap: the list/ETag per origin and the shared detail
         // answers (whole transcripts) must not outlive the account either.
         api.clearMemoryCaches()
@@ -621,6 +635,7 @@ class AppContainer(context: Context) {
                 settings::originNow,
                 serverInfo,
                 cache = sessionCache,
+                activity = sessionActivity,
             )
         }
     }
@@ -694,6 +709,7 @@ class AppContainer(context: Context) {
                 files = api.filesApi(),
                 skillDiagnostics = api,
                 transcripts = sessionCache,
+                activity = sessionActivity,
                 // Sign-out/switch/401 wipes the disk cache; the same bump drops
                 // the transcript this activity-scoped view model holds.
                 sessionEpoch = sessionEpoch,

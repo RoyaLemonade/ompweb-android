@@ -57,4 +57,20 @@ class ChatTimeFormatterTest {
         assertFalse(header.contains(":"))
         assertTrue(formatter.full(old).contains("9:05 AM"))
     }
+
+    @Test
+    fun `the action row stamp reads like the header for today, yesterday and this year`() {
+        val now = stamp(2026, 10, 26, 12, 0)
+
+        assertEquals("9:05 AM", formatter.rowStamp(stamp(2026, 10, 26, 9, 5), now))
+        assertEquals("Yesterday 9:05 AM", formatter.rowStamp(stamp(2026, 10, 25, 9, 5), now))
+        assertEquals("4 Mar, 9:05 AM", formatter.rowStamp(stamp(2026, 3, 4, 9, 5), now))
+    }
+
+    @Test
+    fun `the action row of an earlier year keeps the clock time the header drops`() {
+        val now = stamp(2026, 10, 26, 12, 0)
+
+        assertEquals("4 Mar 2025, 9:05 AM", formatter.rowStamp(stamp(2025, 3, 4, 9, 5), now))
+    }
 }

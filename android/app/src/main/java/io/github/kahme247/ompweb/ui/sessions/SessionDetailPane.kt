@@ -62,6 +62,7 @@ import io.github.kahme247.ompweb.ui.chat.SystemPromptIcon
 import io.github.kahme247.ompweb.ui.chat.SystemPromptState
 import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
 import io.github.kahme247.ompweb.ui.theme.OmpDropdownMenu
+import java.time.Instant
 
 /**
  * Header and metadata of the open session. Phase 5 owns the transcript below
@@ -364,6 +365,9 @@ private fun SessionDetailsDialog(
     onDismiss: () -> Unit,
 ) {
     val colors = LocalOmpColors.current
+    // "Updated" means the newest message, not the session file's mtime: opening
+    // a chat makes omp rewrite its file without a message (session_exit).
+    val lastUsedAt = info?.id?.let { state.knownActivity[it] }
     val title = info?.name?.takeIf { it.isNotBlank() }
         ?: summary?.title()
         ?: stringResource(R.string.session_untitled)
@@ -456,8 +460,10 @@ private fun SessionDetailsDialog(
                         parseSessionTimestamp(info.created)?.let { created ->
                             DetailField(label = stringResource(R.string.detail_created), value = absoluteDate(created))
                         }
-                        parseSessionTimestamp(info.modified)?.let { modified ->
-                            DetailField(label = stringResource(R.string.detail_updated), value = absoluteDate(modified))
+                        val updated = lastUsedAt?.let { Instant.ofEpochMilli(it) }
+                            ?: parseSessionTimestamp(info.modified)
+                        if (updated != null) {
+                            DetailField(label = stringResource(R.string.detail_updated), value = absoluteDate(updated))
                         }
                         info.parentSessionId?.let { parentId ->
                             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))

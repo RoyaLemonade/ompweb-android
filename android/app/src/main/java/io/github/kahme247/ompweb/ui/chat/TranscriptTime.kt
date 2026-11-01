@@ -64,6 +64,21 @@ class ChatTimeFormatter(
         TimeBucket.OlderYear -> anyYearFormat.format(Date(timestamp))
     }
 
+    /**
+     * The stamp at the end of a message's action row: [header]'s shapes, except
+     * that a turn from an earlier year keeps its clock time. The row exists to
+     * say *when* the message was sent, and [header] drops the time exactly for
+     * those turns (the header already carries the date next to the speaker).
+     */
+    fun rowStamp(timestamp: Long, now: Long): String = when (
+        TranscriptFormat.timeBucket(timestamp, now, zone)
+    ) {
+        TimeBucket.Today -> time(timestamp)
+        TimeBucket.Yesterday -> "$yesterdayLabel ${time(timestamp)}"
+        TimeBucket.SameYear -> "${sameYearFormat.format(Date(timestamp))}, ${time(timestamp)}"
+        TimeBucket.OlderYear -> "${anyYearFormat.format(Date(timestamp))}, ${time(timestamp)}"
+    }
+
     /** The day separator: `Today`, `Yesterday`, otherwise a date. */
     fun daySeparator(timestamp: Long, now: Long): String = when (
         TranscriptFormat.dayBucket(timestamp, now, zone)

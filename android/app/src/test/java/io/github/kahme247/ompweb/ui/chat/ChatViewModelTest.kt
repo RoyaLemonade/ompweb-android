@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import io.github.kahme247.ompweb.chat.ChatMessage
 import io.github.kahme247.ompweb.chat.NoticeKind
 import io.github.kahme247.ompweb.data.OutboxStore
+import io.github.kahme247.ompweb.data.SessionActivity
 import io.github.kahme247.ompweb.data.SettingsSnapshot
 import io.github.kahme247.ompweb.data.TemplateStore
 import io.github.kahme247.ompweb.data.TranscriptCache
@@ -147,6 +148,7 @@ class ChatViewModelTest {
         controlsApi: FakeComposerApi = FakeComposerApi(),
         outbox: OutboxStore? = null,
         templates: TemplateStore? = null,
+        activity: SessionActivity? = null,
     ) {
         val activeSettings = settingsOverride ?: if (submitDuringRun == SubmitDuringRunBehavior.DEFAULT) {
             settings
@@ -199,6 +201,7 @@ class ChatViewModelTest {
             ),
             files = FakeFilesApi(),
             transcripts = transcripts,
+            activity = activity,
             cacheDispatcher = dispatcher,
             sessionEpoch = sessionEpoch,
             outbox = outbox,
@@ -269,6 +272,21 @@ class ChatViewModelTest {
         )
         assertTrue(vm.ui.value.rows.isNotEmpty())
         assertTrue("no error notice for a clean run", vm.ui.value.notices.isEmpty())
+    }
+
+    @Test
+    fun `a reopened chat reports its newest message, not the load time`() = chatTest {
+        // The workspace paints this instant as the session's "last used" time;
+        // without it the row would follow the file's mtime, which omp bumps on
+        // every resume.
+        val activity = io.github.kahme247.ompweb.testutil.MemorySessionActivity()
+        api.contextPage = page("s1", listOf(USER_HELLO, ASSISTANT_HI))
+        createViewModel(activity = activity)
+
+        vm.open("s1", null)
+        runCurrent()
+
+        assertEquals(1001L, activity.known.value["s1"])
     }
 
     @Test

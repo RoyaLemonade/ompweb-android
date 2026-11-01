@@ -20,6 +20,7 @@ import io.github.kahme247.ompweb.net.AppInfo
 import io.github.kahme247.ompweb.net.EventPostResult
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
+import io.github.kahme247.ompweb.testutil.MemorySessionActivity
 import io.github.kahme247.ompweb.testutil.MemorySessionListCache
 import io.github.kahme247.ompweb.testutil.waitFor
 import kotlin.random.Random
@@ -87,6 +88,7 @@ class SessionsViewModelTest {
     private lateinit var mux: EventMux
     private val preferences = FakePreferences()
     private val cache = MemorySessionListCache()
+    private val activity = MemorySessionActivity()
 
     @Before
     fun setUp() {
@@ -134,6 +136,7 @@ class SessionsViewModelTest {
             originNow = { address },
             serverInfo = serverInfo,
             cache = cache,
+            activity = activity,
             // The tests drive real threads via `waitFor`; the cache work runs
             // inline so the seed and the write-through are ordered with the
             // request instead of racing it.
@@ -480,6 +483,40 @@ class SessionsViewModelTest {
 
         assertEquals(setOf("/work/beta"), viewModel.state.value.expandedProjects)
         assertEquals("/work/beta", viewModel.state.value.activeCwd)
+    }
+
+    @Test
+    fun `a chat opened today does not lift its project when its last message is older`() {
+        // Opening a chat rewrites the session file, so the server's `modified`
+        // of `s-alpha` (March) is much newer than `s-beta`'s (February). The
+        // last message of `s-alpha` is from January, and that is what the
+        // activity order must follow.
+        projectResponses.add(
+            json("""{"projects":[{"path":"/work/alpha"},{"path":"/work/beta"}]}"""),
+        )
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[
+                    {"id":"s-alpha","cwd":"/work/alpha","modified":"2026-03-01T10:00:00.000Z"},
+                    {"id":"s-beta","cwd":"/work/beta","modified":"2026-02-01T10:00:00.000Z"}],
+                   "runningSessionIds":[]}""",
+            ),
+        )
+        activity.record("s-alpha", java.time.Instant.parse("2026-01-15T10:00:00Z").toEpochMilli())
+        waitFor("activity published") { viewModel.state.value.knownActivity.containsKey("s-alpha") }
+
+        viewModel.setActive(true)
+        waitFor("expansion seeded") { viewModel.state.value.expandedProjects != null }
+
+        assertEquals(setOf("/work/beta"), viewModel.state.value.expandedProjects)
+        assertEquals("/work/beta", viewModel.state.value.activeCwd)
+    }
+
+    @Test
+    fun `the activity map reaches the pane state`() {
+        activity.record("s1", 1_700_000_000_000)
+
+        waitFor("activity published") { viewModel.state.value.knownActivity["s1"] == 1_700_000_000_000L }
     }
 
     @Test

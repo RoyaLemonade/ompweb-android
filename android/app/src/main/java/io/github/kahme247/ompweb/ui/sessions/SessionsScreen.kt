@@ -142,6 +142,7 @@ import io.github.kahme247.ompweb.domain.sessionsShowsRefreshError
 import io.github.kahme247.ompweb.domain.sessionsShowsUpdating
 import io.github.kahme247.ompweb.domain.visibleChatSession
 import io.github.kahme247.ompweb.domain.visibleSessionEntries
+import io.github.kahme247.ompweb.domain.withKnownActivity
 import io.github.kahme247.ompweb.events.ConnectionState
 import io.github.kahme247.ompweb.net.ExportedSession
 import io.github.kahme247.ompweb.net.ManagedProject
@@ -1176,6 +1177,7 @@ internal fun SessionListPane(
     val filterActive = searchActive || sessionFilter.active
     val display = remember(
         state.sessions,
+        state.knownActivity,
         state.runningIds,
         state.runningCwds,
         state.exited,
@@ -1183,7 +1185,10 @@ internal fun SessionListPane(
         state.activeCwd,
     ) {
         withLivePlaceholders(
-            sessions = state.sessions,
+            // `modified` is the session file's mtime, which omp also bumps on a
+            // resume; the row, the age chip and both orders paint the newest
+            // message this device has seen instead (see `domain/SessionActivity`).
+            sessions = state.sessions.withKnownActivity(state.knownActivity),
             runningIds = state.runningIds,
             runningCwds = state.runningCwds,
             exited = state.exited,
