@@ -26,6 +26,8 @@ import io.github.kahme247.ompweb.net.WebServerSettings
 import io.github.kahme247.ompweb.net.WindowsServiceAction
 import io.github.kahme247.ompweb.net.WindowsServiceInfo
 import io.github.kahme247.ompweb.net.userMessage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -197,6 +199,11 @@ class SettingsViewModel(
         // Bumped before the inputs are cleared: a check that was already in
         // flight against the previous origin must not repopulate the banner.
         serverGeneration += 1
+        // Same for the usage scan: cancel it and make its late answer stale,
+        // so the new server's tab starts empty instead of showing the
+        // previous installation's report.
+        usageJob?.cancel()
+        usageGeneration += 1
         updateInputs.value = UpdateInputs()
         _system.value = SystemSettingsState()
         _usage.value = UsageState()
@@ -724,12 +731,33 @@ class SettingsViewModel(
         }
     }
 
+    /**
+     * The fetch behind the Usage tab. A changed range or granularity replaces
+     * it instead of being dropped: the tab must show the report for the
+     * selection on screen, never the one that happened to be asked for first.
+     */
+    private var usageJob: Job? = null
+
+    /** Bumped per fetch so a replaced one cannot publish its answer late. */
+    private var usageGeneration = 0
+
     fun loadUsage(force: Boolean = false) {
-        if (_usage.value.loading) return
         val current = _usage.value
+        val generation = ++usageGeneration
+        usageJob?.cancel()
         _usage.update { it.copy(loading = true, error = null) }
-        viewModelScope.launch {
-            val result = runCatching { system.usage(current.range, current.granularity, force) }
+        usageJob = viewModelScope.launch {
+            val result = try {
+                Result.success(system.usage(current.range, current.granularity, force))
+            } catch (cancelled: CancellationException) {
+                // A replaced fetch publishes nothing; the replacement owns
+                // the state. Catching it here would report a failure for work
+                // this tab no longer wants.
+                throw cancelled
+            } catch (error: Throwable) {
+                Result.failure(error)
+            }
+            if (generation != usageGeneration) return@launch
             _usage.update { state ->
                 val report = result.getOrNull() ?: state.report
                 state.copy(

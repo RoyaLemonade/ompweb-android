@@ -147,6 +147,18 @@ class ApiClient(
     }
 
     /**
+     * The client of [exchangeLongRunning]. Separate from [client] by timeout
+     * only: a scan route legitimately produces no byte for over a minute, and
+     * the shared read timeout would kill that healthy wait.
+     */
+    private val longRouteClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .readTimeout(LONG_ROUTE_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .callTimeout(LONG_ROUTE_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /**
      * Last session list per origin together with its ETag, so a poll that the
      * server answers with 304 keeps the list the UI already shows (A23, web
      * `SessionSidebar`). Keyed by origin: a server switch must never reuse the
@@ -1255,14 +1267,30 @@ class ApiClient(
      * body is capped like every other route, so callers never see a raw
      * response or an unbounded read.
      */
-    suspend fun exchange(request: Request, limit: Long = MAX_BODY_BYTES): RawExchange = withContext(Dispatchers.IO) {
-        val response = try {
-            client.newCall(request).execute()
-        } catch (error: IOException) {
-            throw ApiError.Network(error)
+    suspend fun exchange(request: Request, limit: Long = MAX_BODY_BYTES): RawExchange =
+        exchangeOn(client, request, limit)
+
+    /**
+     * [exchange] for the one route that scans its whole input before it
+     * answers: `GET /api/usage` walks every transcript on the server (its own
+     * `diagnostics.log` records synchronous event-loop stalls of 60–140 s),
+     * so the default 60 s read timeout reported a working server as
+     * unreachable. The derived client waits the scan out instead; its
+     * `callTimeout` still bounds the wait, so a stalled scan cannot hold the
+     * caller forever.
+     */
+    suspend fun exchangeLongRunning(request: Request, limit: Long = MAX_BODY_BYTES): RawExchange =
+        exchangeOn(longRouteClient, request, limit)
+
+    private suspend fun exchangeOn(http: OkHttpClient, request: Request, limit: Long): RawExchange =
+        withContext(Dispatchers.IO) {
+            val response = try {
+                http.newCall(request).execute()
+            } catch (error: IOException) {
+                throw ApiError.Network(error)
+            }
+            response.use { RawExchange(it.code, readCappedBytes(it, limit), it.header("Content-Type")) }
         }
-        response.use { RawExchange(it.code, readCappedBytes(it, limit), it.header("Content-Type")) }
-    }
 
     /**
      * Opens [request] for an incremental read (SSE/NDJSON). The caller owns the
@@ -1529,6 +1557,16 @@ class ApiClient(
          * "unknown state", and the draft stays in the composer.
          */
         internal const val LIVE_STATE_READ_TIMEOUT_MILLIS = 10_000L
+
+        /**
+         * The bounds of a route that scans on the server before answering
+         * ([exchangeLongRunning]). The read timeout covers the silence of a
+         * cold scan, the call timeout the whole wait: a scan that never ends
+         * still leaves the caller with an answer (an error it can show and
+         * retry) instead of an endless progress state.
+         */
+        internal const val LONG_ROUTE_READ_TIMEOUT_SECONDS = 180L
+        internal const val LONG_ROUTE_CALL_TIMEOUT_SECONDS = 240L
         const val UNKNOWN_CONNECTION = "unknown_connection"
         /** 503 code for "omp is busy, the session keeps running". */
         const val SESSION_SLOW = "session_slow"

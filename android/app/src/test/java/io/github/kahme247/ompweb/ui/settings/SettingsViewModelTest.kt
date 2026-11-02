@@ -10,9 +10,11 @@ import io.github.kahme247.ompweb.domain.UpdatePhase
 import io.github.kahme247.ompweb.net.ApiClient
 import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.ServerAddressResult
+import io.github.kahme247.ompweb.net.UsageTimeRange
 import io.github.kahme247.ompweb.net.systemApi
 import io.github.kahme247.ompweb.testutil.waitFor
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -50,6 +52,7 @@ class SettingsViewModelTest {
 
     private lateinit var server: MockWebServer
     private lateinit var api: ApiClient
+    private lateinit var address: ServerAddress
     private lateinit var scope: CoroutineScope
     private lateinit var viewModel: SettingsViewModel
     private var store = ViewModelStore()
@@ -113,6 +116,7 @@ class SettingsViewModelTest {
         }
         server.start()
         val address = (ServerAddress.parse("http://127.0.0.1:${server.port}") as ServerAddressResult.Valid).address
+        this.address = address
         val api = ApiClient(OkHttpClient(), { address })
         this.api = api
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -206,6 +210,87 @@ class SettingsViewModelTest {
         assertTrue("force must bypass the server cache: $last", last.contains("refresh=true"))
     }
 
+    @Test
+    fun `a scan slower than the default read timeout still loads`() {
+        // `/api/usage` scans every transcript on the server before it answers.
+        // A 150 ms read timeout stands in for the 60 s one the tab used to
+        // hit: the scan must be measured against the long-running bound, not
+        // against the client every other route uses.
+        val slowClient = viewModelWithReadTimeout(readTimeoutMillis = 150)
+        routes["/api/usage"] = { _, _ ->
+            json(realShapedUsageJson()).setHeadersDelay(700, TimeUnit.MILLISECONDS)
+        }
+
+        slowClient.loadUsage()
+
+        waitFor("the report of a scan that outlives the default timeout") {
+            slowClient.usageState.value.report != null
+        }
+        assertNull(slowClient.usageState.value.error)
+        assertFalse(slowClient.usageState.value.loading)
+    }
+
+    @Test
+    fun `a range change replaces the running fetch instead of being dropped`() {
+        routes["/api/usage"] = { request, _ ->
+            val range = request.requestUrl?.queryParameter("range") ?: "30d"
+            json(usageJson(points = 2).replace("\"timeRange\":\"30d\"", "\"timeRange\":\"$range\""))
+                .setHeadersDelay(300, TimeUnit.MILLISECONDS)
+        }
+
+        viewModel.loadUsage() // 30d, still in flight
+        viewModel.setUsageRange(UsageTimeRange.SEVEN_DAYS)
+
+        waitFor("the report of the selected range") {
+            viewModel.usageState.value.report?.timeRange == "7d"
+        }
+        assertFalse(viewModel.usageState.value.loading)
+        assertNull(viewModel.usageState.value.error)
+    }
+
+    @Test
+    fun `a failed scan leaves the loading state with an error the tab can show`() {
+        routes["/api/usage"] = { _, _ -> json("""{"error":"scan failed"}""", code = 500) }
+
+        viewModel.loadUsage()
+
+        waitFor("the failure") { !viewModel.usageState.value.loading }
+        assertNull(viewModel.usageState.value.report)
+        assertTrue("the failure must be reported", viewModel.usageState.value.error != null)
+    }
+
+    @Test
+    fun `the real usage payload fills every section of the report`() {
+        routes["/api/usage"] = { _, _ -> json(realShapedUsageJson()) }
+
+        viewModel.loadUsage()
+
+        waitFor("the report") { viewModel.usageState.value.report != null }
+        val report = viewModel.usageState.value.report!!
+        assertEquals("30d", report.timeRange)
+        assertEquals("daily", report.granularity)
+        assertEquals(12.75, report.summary.totalCost, 0.0001)
+        assertEquals(1_250_000L, report.summary.totalTokens)
+        assertEquals(42, report.summary.activeDays)
+        assertEquals(60.0, report.summary.costQuality.providerReported, 0.0001)
+        assertEquals(2, report.providers.size)
+        assertEquals("claude", report.providers.first().provider)
+        assertEquals(63.5, report.providers.first().share, 0.0001)
+        assertEquals("#d97757", report.providers.first().color)
+        assertEquals(2, report.timeSeries.size)
+        assertEquals("2026-11-01", report.timeSeries.first().date)
+        assertEquals(9.5, report.timeSeries.first().totalCost, 0.0001)
+        assertEquals(2, report.modelBreakdown.size)
+        assertEquals(41, report.modelBreakdown.first().recordsCount)
+        assertEquals(2, report.dayBreakdown.size)
+        assertEquals(3.25, report.dayBreakdown.last().cost, 0.0001)
+        assertEquals(2, report.projectBreakdown.size)
+        assertEquals("ompweb-android", report.projectBreakdown.first().projectName)
+        assertEquals(17, report.scanInfo.transcriptsScanned)
+        assertEquals(3, report.scanInfo.transcriptsOutsideWindow)
+        assertEquals(1.5, report.scanInfo.durationSeconds, 0.0001)
+    }
+
     // --------------------------------------------------------------- agent env
 
     @Test
@@ -287,6 +372,29 @@ class SettingsViewModelTest {
         waitFor("usage cleared") { viewModel.providerUsageState.value.snapshot == null }
         assertNull(viewModel.systemState.value.appUpdate)
         assertNull(viewModel.systemState.value.ompUpdate)
+    }
+
+    @Test
+    fun `a server switch drops the usage scan of the previous server`() {
+        routes["/api/usage"] = { _, _ -> json(realShapedUsageJson()) }
+        viewModel.loadUsage()
+        waitFor("the first report") { viewModel.usageState.value.report != null }
+
+        val requests = server.requestCount
+        routes["/api/usage"] = { _, _ ->
+            json(realShapedUsageJson()).setHeadersDelay(400, TimeUnit.MILLISECONDS)
+        }
+        viewModel.loadUsage(force = true)
+        waitFor("the second scan on the wire") { server.requestCount > requests }
+
+        // The new origin clears the tab while the old scan is still running.
+        prefs.setOrigin("http://127.0.0.1:1")
+        waitFor("the previous server's report cleared") { viewModel.usageState.value.report == null }
+
+        // Its late answer belongs to the installation the user left.
+        Thread.sleep(800)
+        assertNull(viewModel.usageState.value.report)
+        assertFalse(viewModel.usageState.value.loading)
     }
 
     @Test
@@ -561,6 +669,58 @@ class SettingsViewModelTest {
         assertEquals("- fix A", notes.body)
         assertTrue(notes.htmlUrl.contains("v1.1.0"))
     }
+
+    /** A view model over a client that gives up after [readTimeoutMillis]. */
+    private fun viewModelWithReadTimeout(readTimeoutMillis: Long): SettingsViewModel {
+        val api = ApiClient(
+            OkHttpClient.Builder().readTimeout(readTimeoutMillis, TimeUnit.MILLISECONDS).build(),
+            { address },
+        )
+        val poller = ProviderUsagePoller(load = { api.systemApi().providerUsage(it) }, scope = scope)
+        return SettingsViewModel(api.systemApi(), prefs, poller, nowMillis = { nowMillis })
+    }
+
+    /**
+     * `/api/usage` as the server actually sends it: the key set and value
+     * types of a real answer, the numbers synthetic. The parser is hand
+     * written, so a fixture carrying only the keys the app reads would hide
+     * exactly the drift a new or renamed field causes.
+     */
+    private fun realShapedUsageJson(): String = """
+        {"timeRange":"30d","granularity":"daily",
+         "summary":{"totalCost":12.75,"totalTokens":1250000,"inputTokens":800000,
+                    "outputTokens":300000,"reasoningTokens":150000,"cacheReadTokens":900000,
+                    "cacheWriteTokens":50000,"cacheSavings":3.5,"activeDays":42,
+                    "tokensPerActiveDay":29761,"cachePercentage":72.5,
+                    "costQuality":{"providerReported":60,"modelPriced":35,"unpriced":5}},
+         "providers":[
+            {"provider":"claude","name":"Claude","cost":8.1,"tokens":700000,"share":63.5,"color":"#d97757"},
+            {"provider":"codex","name":"Codex","cost":4.65,"tokens":550000,"share":36.5,"color":"#10a37f"}],
+         "timeSeries":[
+            {"date":"2026-11-01","label":"Nov 1","timestamp":1761955200000,"totalCost":9.5,
+             "totalTokens":900000,"byProvider":{"claude":{"cost":6.5,"tokens":600000},"codex":{"cost":3.0,"tokens":300000}}},
+            {"date":"2026-11-02","label":"Nov 2","timestamp":1762041600000,"totalCost":3.25,
+             "totalTokens":350000,"byProvider":{"claude":{"cost":1.6,"tokens":100000},"codex":{"cost":1.65,"tokens":250000}}}],
+         "modelBreakdown":[
+            {"model":"claude-opus-4","provider":"claude","cost":8.1,"tokens":700000,"inputTokens":400000,
+             "outputTokens":200000,"cacheReadTokens":80000,"cacheWriteTokens":20000,"reasoningTokens":0,
+             "recordsCount":41,"share":63.5},
+            {"model":"gpt-5-codex","provider":"codex","cost":4.65,"tokens":550000,"inputTokens":300000,
+             "outputTokens":150000,"cacheReadTokens":90000,"cacheWriteTokens":10000,"reasoningTokens":0,
+             "recordsCount":23,"share":36.5}],
+         "dayBreakdown":[
+            {"date":"2026-11-01","label":"Nov 1, 2026","cost":9.5,"tokens":900000,"inputTokens":500000,
+             "outputTokens":350000,"cacheReadTokens":50000,"share":74.5},
+            {"date":"2026-11-02","label":"Nov 2, 2026","cost":3.25,"tokens":350000,"inputTokens":300000,
+             "outputTokens":5000,"cacheReadTokens":45000,"share":25.5}],
+         "projectBreakdown":[
+            {"project":"C:\\work\\ompweb-android","projectName":"ompweb-android","cost":10.0,
+             "tokens":1000000,"share":78.4,"sessionsCount":12},
+            {"project":"C:\\work\\ompweb","projectName":"ompweb","cost":2.75,"tokens":250000,
+             "share":21.6,"sessionsCount":4}],
+         "scanInfo":{"transcriptsScanned":17,"transcriptsOutsideWindow":3,"usageRecordsCount":64,
+                     "durationSeconds":1.5,"scannedAt":1762041600000}}
+    """.trimIndent()
 
     private fun usageJson(points: Int): String {
         val series = (1..points).joinToString(",") { day ->

@@ -56,8 +56,12 @@ fun UsageSettingsTab(
     highlight: String? = null,
 ) {
     val state by viewModel.usageState.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) {
-        if (state.report == null) viewModel.loadUsage()
+    // Load when nothing is loaded — including after the state was reset (a
+    // recreated view model, another server). A failed load is not retried
+    // here: the failure card owns that, so a server that keeps failing
+    // cannot turn into an automatic request loop.
+    LaunchedEffect(state.report, state.loading, state.error) {
+        if (state.report == null && !state.loading && state.error == null) viewModel.loadUsage()
     }
 
     SettingsPage(
@@ -101,22 +105,36 @@ fun UsageSettingsTab(
                         Text(stringResource(R.string.settings_refresh))
                     }
                 }
-                state.error?.let { SettingsMessage(it, error = true) }
-                if (state.loading) {
-                    Text(
-                        text = stringResource(R.string.usage_loading),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = LocalOmpColors.current.textDim,
-                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                    )
+                // Only a refresh over an existing report is reported here; the
+                // first load and its failures are the page body's state (see
+                // UsageScan/UsageFailure), so neither is announced twice.
+                if (state.report != null) {
+                    state.error?.let { SettingsMessage(it, error = true) }
+                    if (state.loading) {
+                        Text(
+                            text = stringResource(R.string.usage_scanning),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = LocalOmpColors.current.textDim,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                        )
+                    }
                 }
             }
         }
 
         val report = state.report
         if (report == null) {
-            item(key = "usage-loading") {
-                SettingsLoading(stringResource(R.string.usage_loading))
+            item(key = "usage-state") {
+                val error = state.error
+                if (error != null) {
+                    UsageFailure(
+                        message = error,
+                        retrying = state.loading,
+                        onRetry = { viewModel.loadUsage() },
+                    )
+                } else {
+                    UsageScan(loading = state.loading)
+                }
             }
             return@SettingsPage
         }
@@ -295,6 +313,47 @@ fun UsageSettingsTab(
                 color = LocalOmpColors.current.textDim,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
+        }
+    }
+}
+
+/**
+ * The first load has no report yet. The server scans every transcript of the
+ * selected range before it answers (its own log records stalls of a minute
+ * and more), so the tab names that work instead of showing an unexplained
+ * progress line.
+ */
+@Composable
+private fun UsageScan(loading: Boolean) {
+    SettingsCard {
+        Text(
+            text = stringResource(if (loading) R.string.usage_scanning else R.string.usage_loading),
+            style = MaterialTheme.typography.bodyMedium,
+            color = LocalOmpColors.current.text,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        )
+        if (loading) {
+            Text(
+                stringResource(R.string.usage_scanning_hint),
+                style = MaterialTheme.typography.labelSmall,
+                color = LocalOmpColors.current.textDim,
+            )
+        }
+    }
+}
+
+/**
+ * The web's `usageConfig.error`: the failure and an explicit retry. A failed
+ * scan never leaves the page on a progress label — that state was
+ * indistinguishable from a scan that never finishes.
+ */
+@Composable
+private fun UsageFailure(message: String, retrying: Boolean, onRetry: () -> Unit) {
+    SettingsCard {
+        SettingsSectionTitle(stringResource(R.string.usage_error_title))
+        SettingsMessage(message, error = true)
+        TextButton(onClick = onRetry, enabled = !retrying) {
+            Text(stringResource(R.string.settings_retry))
         }
     }
 }

@@ -460,7 +460,10 @@ private class HttpSystemApi(private val api: ApiClient) : SystemApi {
             append("&granularity=").append(granularity.wire)
             if (refresh) append("&refresh=true")
         }
-        return parseUsage(getObject(query))
+        // The server scans every transcript synchronously before it answers,
+        // so this one route gets the long-running bound instead of the
+        // default read timeout (see [ApiClient.exchangeLongRunning]).
+        return parseUsage(getObject(query, longRunning = true))
     }
 
     override suspend fun providerUsage(refresh: Boolean): ProviderUsageSnapshot {
@@ -487,8 +490,8 @@ private class HttpSystemApi(private val api: ApiClient) : SystemApi {
 
     // ------------------------------------------------------------ transport
 
-    private suspend fun getObject(path: String): JsonObject =
-        parseObject(send(api.requestBuilder(path).get().build()))
+    private suspend fun getObject(path: String, longRunning: Boolean = false): JsonObject =
+        parseObject(send(api.requestBuilder(path).get().build(), longRunning))
 
     private suspend fun postObject(path: String, payload: String): JsonObject {
         val request = api.requestBuilder(path)
@@ -497,8 +500,13 @@ private class HttpSystemApi(private val api: ApiClient) : SystemApi {
         return parseObject(send(request))
     }
 
-    private suspend fun send(request: Request): String {
-        val response = api.exchange(request)
+    /**
+     * [longRunning] is the scan bound of `GET /api/usage`: the answer may take
+     * minutes on the server, so it must not be measured against the default
+     * read timeout (see [ApiClient.exchangeLongRunning]).
+     */
+    private suspend fun send(request: Request, longRunning: Boolean = false): String {
+        val response = if (longRunning) api.exchangeLongRunning(request) else api.exchange(request)
         val text = response.text()
         if (response.status in 200..299) return text
         throw when (response.status) {

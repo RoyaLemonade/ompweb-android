@@ -118,6 +118,9 @@
     <string name="usage_time_series">Spend over time</string>
     <string name="usage_scan">%1$d transcripts · %2$d records · %3$ss</string>
     <string name="usage_loading">Loading usage…</string>
+    <string name="usage_scanning">Scanning sessions…</string>
+    <string name="usage_scanning_hint">The server reads every transcript of this range before it answers, so the first scan can take a while.</string>
+    <string name="usage_error_title">Could not load usage data</string>
     <string name="usage_no_data">No usage in this range yet.</string>
 
     <!-- System & Updates -->

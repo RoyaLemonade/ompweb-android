@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.net
 
 import java.io.IOException
+import java.net.SocketTimeoutException
 
 /**
  * Every failure an API call can produce, in the terms the UI needs.
@@ -84,7 +85,15 @@ sealed class ApiError(message: String, cause: Throwable? = null) : Exception(mes
 fun ApiError.userMessage(): String = when (this) {
     is ApiError.ServerResponse -> serverMessage ?: code ?: "HTTP $status"
     is ApiError.Http -> "HTTP $code"
-    is ApiError.Network -> "Cannot reach the server"
+    // A read timeout is not a dead server: the request arrived, the answer
+    // took longer than the app waits. Saying so is what lets the user decide
+    // to retry (the scan usually finishes server-side).
+    is ApiError.Network ->
+        if (cause is SocketTimeoutException) {
+            "The server did not answer in time — try again in a moment."
+        } else {
+            "Cannot reach the server"
+        }
     is ApiError.Forbidden -> "Not allowed"
     is ApiError.ServerMisconfigured -> "The server needs configuration"
     is ApiError.SessionSlow ->
