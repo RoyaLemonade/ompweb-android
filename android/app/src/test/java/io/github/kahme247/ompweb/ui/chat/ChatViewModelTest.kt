@@ -30,7 +30,6 @@ import io.github.kahme247.ompweb.net.ServerAddress
 import io.github.kahme247.ompweb.net.SkillsResponse
 import io.github.kahme247.ompweb.domain.ComposerImage
 import io.github.kahme247.ompweb.domain.AskAnswer
-import io.github.kahme247.ompweb.domain.CLIPBOARD_READ_DENIED
 import io.github.kahme247.ompweb.domain.DictationState
 import io.github.kahme247.ompweb.domain.ExtensionResponse
 import io.github.kahme247.ompweb.domain.chatShowsConnecting
@@ -379,9 +378,13 @@ class ChatViewModelTest {
     /**
      * The reported bug: the user left the chat for the list, the agent asked
      * there, and opening the chat again (the list row, or the notification the
-     * ask produced) showed the running ask tool with no question panel. The
-     * hidden chat's subscription never stopped, so that dialog was the only
-     * copy the client had — and the re-bind used to throw it away.
+     * ask produced) showed the running ask tool with no question panel.
+     *
+     * The hidden chat now releases its session subscription (its frames carry
+     * the full accumulated message per token — nobody reads them behind the
+     * list). A blocking dialog is kept by the server and replayed to the next
+     * subscription, so the panel must come back with the chat; the answer must
+     * still name the session that asked.
      */
     @Test
     fun anAskThatArrivesWhileTheChatIsHiddenIsShownWhenTheChatComesBack() = chatTest {
@@ -389,13 +392,12 @@ class ChatViewModelTest {
         vm.open("s1", null)
         runCurrent()
 
-        // Back to the list: the surface is gone, the subscription is not.
+        // Back to the list: the surface is gone and the stream is released.
         vm.onChatHidden()
-        emit(ASK_FRAME)
-        assertNotNull(
-            "the hidden chat's stream keeps delivering the request",
-            vm.extensionUi.dialog.value,
-        )
+        runCurrent()
+        assertEquals(0, events.activeSubscriptions)
+        // The server keeps the blocking ask for the next listener.
+        events.pending += parse(ASK_FRAME)
 
         // The list row or the notification tap re-opens the same chat.
         vm.open("s1", null)
@@ -423,26 +425,12 @@ class ChatViewModelTest {
         assertEquals("ask-1", vm.extensionUi.dialog.value?.id)
     }
 
-    @Test
-    fun aHostUriThatArrivesWhileTheChatIsHiddenIsStillAnswered() = chatTest {
-        createViewModel()
-        vm.open("s1", null)
-        runCurrent()
-
-        // The user is back on the list; the session stream keeps running.
-        vm.onChatHidden()
-        emit(HOST_READ_FRAME)
-        runCurrent()
-
-        // omp waits for the result: the answer goes to the session that asked
-        // even though nothing renders the clipboard consent.
-        val (answeredSession, command) = extensionApi.commands.single()
-        assertEquals("s1", answeredSession)
-        assertEquals("host_uri_result", command["type"]?.jsonPrimitive?.content)
-        assertEquals("clip-1", command["id"]?.jsonPrimitive?.content)
-        assertEquals(CLIPBOARD_READ_DENIED, command["error"]?.jsonPrimitive?.content)
-        assertNull(vm.extensionUi.clipboardPrompt.value)
-    }
+    // A `host_uri_request` can no longer arrive at a released stream: the
+    // server rejects a pending URI request as soon as the last listener
+    // detaches (`lib/rpc-manager.ts` -> `rejectPendingHostUris`), so omp gets
+    // "the web UI disconnected" instead of waiting forever. That is the
+    // outcome the old hidden-stream test asserted (a read was denied while
+    // nothing could ask), now guaranteed on the server side.
 
     @Test
     fun anOpenUrlThatArrivesWhileTheChatIsHiddenWaitsForTheChat() = chatTest {
@@ -451,8 +439,12 @@ class ChatViewModelTest {
         runCurrent()
 
         vm.onChatHidden()
-        emit(OPEN_URL_FRAME)
-        assertNotNull("kept, never opened on its own", vm.extensionUi.openUrlPrompt.value)
+        runCurrent()
+        assertEquals("the stream is released behind the list", 0, events.activeSubscriptions)
+        // A blocking `open_url` is one of the server's pending UI requests: it
+        // is replayed to the next subscription instead of being opened on its
+        // own while nothing is on screen.
+        events.pending += parse(OPEN_URL_FRAME)
 
         vm.open("s1", null)
         runCurrent()
@@ -495,9 +487,8 @@ class ChatViewModelTest {
         createViewModel()
         vm.open("s1", null)
         runCurrent()
-        vm.onChatHidden()
         emit(ASK_FRAME)
-        assertNotNull("the hidden chat's stream delivers it", vm.extensionUi.dialog.value)
+        assertNotNull("the visible chat shows the ask", vm.extensionUi.dialog.value)
 
         // The activity goes away: the ViewModelStore calls onCleared, exactly
         // like it does when the surface is destroyed for good.
@@ -820,6 +811,69 @@ class ChatViewModelTest {
         advanceTimeBy(60_001)
         runCurrent()
         assertTrue("the poll resumes with the surface", api.agentStateCalls > calls)
+    }
+
+    /**
+     * The session channel carries the full accumulated message per update
+     * (measured ~1.6 MB/s for one answer). A chat behind the list must not keep
+     * that stream open; coming back subscribes again instead of leaving a dead
+     * collector behind.
+     */
+    @Test
+    fun `a hidden chat releases its session subscription`() = chatTest {
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+        assertEquals("the open chat subscribes its session", 1, events.activeSubscriptions)
+        assertEquals(EventChannel.Session("s1"), events.lastChannel)
+
+        vm.onChatHidden()
+        runCurrent()
+        assertEquals("the stream is released behind the list", 0, events.activeSubscriptions)
+
+        vm.onChatVisible()
+        runCurrent()
+        assertEquals("re-entering the stage subscribes again", 1, events.activeSubscriptions)
+        assertEquals(2, events.subscriptions)
+    }
+
+    /**
+     * Backgrounding releases the stream too, and the way back is one cheap
+     * incremental `sync=1` page — never a second full transcript download.
+     */
+    @Test
+    fun `a backgrounded chat releases its stream and catches up incrementally`() = chatTest {
+        api.contextPage = page("s1", listOf(USER_HELLO, ASSISTANT_HI))
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+        assertEquals(1, api.contextFullCalls)
+        assertEquals(1, events.activeSubscriptions)
+
+        // Home button / screen off. The answer keeps streaming on the server,
+        // but nothing of it is received (or paid for) here.
+        vm.onBackground()
+        runCurrent()
+        assertEquals("no session stream without a UI", 0, events.activeSubscriptions)
+
+        advanceTimeBy(60_001)
+        runCurrent()
+        assertEquals("the background keeps the full download count", 1, api.contextFullCalls)
+        assertEquals(0, api.contextSyncCalls)
+
+        // The way back pulls the missing tail with the append page.
+        api.contextPage = parse(
+            """{"sessionId":"s1","mode":"append","baseEntryId":"e1","hasMore":false,""" +
+                """"context":{"entryIds":["e2"],"messages":[{"role":"assistant",""" +
+                """"content":[{"type":"text","text":"late answer"}],"timestamp":1002,"stopReason":"stop"}]}}""",
+        )
+        vm.onForeground()
+        runCurrent()
+
+        assertEquals("the stream is open again", 1, events.activeSubscriptions)
+        assertEquals("no second full transcript download", 1, api.contextFullCalls)
+        assertTrue("the return syncs incrementally", api.contextSyncCalls >= 1)
+        assertEquals("the missed answer is in the transcript", 3, vm.ui.value.engine.messages.size)
     }
 
     /**
@@ -3049,9 +3103,25 @@ class ChatViewModelTest {
         /** What the server still holds as open `extension_ui_request`s. */
         val pending = mutableListOf<JsonObject>()
 
+        /** Subscribe calls, including re-subscribes after a release. */
+        var subscriptions = 0
+
+        /** Collectors alive right now: the server subscription is released at 0. */
+        var activeSubscriptions = 0
+
+        /** Channel of the newest subscription. */
+        var lastChannel: EventChannel? = null
+
         override fun subscribe(channel: EventChannel): Flow<JsonObject> = flow {
-            for (frame in pending) emit(frame)
-            emitAll(frames)
+            subscriptions++
+            lastChannel = channel
+            activeSubscriptions++
+            try {
+                for (frame in pending) emit(frame)
+                emitAll(frames)
+            } finally {
+                activeSubscriptions--
+            }
         }
     }
 
@@ -3141,9 +3211,6 @@ class ChatViewModelTest {
             """{"type":"extension_ui_request","id":"ask-1","method":"ask","questions":[{""" +
                 """"id":"color","question":"Which colour?","multi":false,""" +
                 """"options":[{"label":"Red"},{"label":"Green"}]}]}"""
-
-        const val HOST_READ_FRAME =
-            """{"type":"host_uri_request","id":"clip-1","operation":"read","url":"pi-web://clipboard"}"""
 
         const val OPEN_URL_FRAME =
             """{"type":"extension_ui_request","method":"open_url","url":"https://example.com/page"}"""

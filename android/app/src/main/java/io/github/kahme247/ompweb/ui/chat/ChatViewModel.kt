@@ -90,6 +90,7 @@ import io.github.kahme247.ompweb.domain.DictationResult
 import io.github.kahme247.ompweb.domain.dictationOutcome
 import io.github.kahme247.ompweb.ui.render.GithubRepoRef
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -1738,12 +1739,15 @@ class ChatViewModel(
      * dictation ends (same rule as the composer's ON_STOP in
      * `ReportVisibility`). The recognizer and recorder have no UI left to
      * report to; leaving them running would keep the microphone busy behind
-     * the list. The extension panels themselves stay in `ExtensionUiController`
-     * (its subscription keeps running) — [bind] drops them only on a session
-     * change, and [clearSessionData] wipes them.
+     * the list. The session channel is released as well (see
+     * [startSubscription]): its frames carry the full accumulated message per
+     * token, which nobody can read behind the list. The extension panels
+     * themselves stay in `ExtensionUiController` — [bind] drops them only on a
+     * session change, [clearSessionData] wipes them, and the next subscription
+     * to the session replays a dialog that is still pending.
      */
     fun onChatHidden() {
-        // The chat is gone from the stage: its poll goes with it.
+        // The chat is gone from the stage: its poll and its stream go with it.
         chatSurfaceVisible = false
         updateChatOnScreen()
         hostTools.setViewedSession(null)
@@ -2594,11 +2598,13 @@ class ChatViewModel(
     }
 
     /**
-     * The activity stopped (home, an overlay, the screen locked). The periodic
-     * reconcile belongs to a visible chat: it pauses here instead of asking the
-     * server every 2–60 s from behind the lock screen. Nothing is lost — the
-     * session channel keeps the transcript current, notifications arrive on the
-     * service's channel, and [onForeground] reconciles once on return.
+     * The activity stopped (home, an overlay, the screen locked). Everything
+     * that talks to the server for this chat pauses here: the periodic
+     * reconcile and — through [chatOnScreen] — the session channel, whose
+     * frames carry the full accumulated message and tool output per update.
+     * Notifications keep arriving on the service's own channels; [onForeground]
+     * re-subscribes and the `connected` frame pulls one incremental `sync=1`
+     * page, so the transcript is current again without a second full download.
      */
     fun onBackground() {
         activityStarted = false
@@ -3440,43 +3446,79 @@ class ChatViewModel(
 
     // --------------------------------------------------------------- transport
 
+    /**
+     * The session channel belongs to a chat the user can actually see.
+     *
+     * omp sends the **full accumulated message** on every `message_update` and
+     * the accumulated tool output on every `tool_execution_update` (measured:
+     * ~1.6 MB/s for one long answer, ~24 MB for a 5 MB bash run). A chat that
+     * is hidden behind the list or the lock screen used to keep that stream
+     * open — the single largest data sink of the app. So the subscription is
+     * released as soon as [chatOnScreen] drops (chat off the stage or app in
+     * the background) and opened again on return; the server replays only a
+     * `connected` frame and a pending extension dialog, and the transcript is
+     * caught up by the cheap incremental `sync=1` page that the `connected`
+     * frame triggers. Notifications keep arriving on the notification
+     * service's own channels.
+     */
     private fun startSubscription(sid: String) {
         subscriptionJob?.cancel()
         subscriptionJob = viewModelScope.launch {
             var retryMillis = 0L
-            while (isActive) {
+            while (isActive && sessionId == sid) {
+                // No UI, no stream: waiting here sends and receives nothing.
+                chatOnScreen.first { it }
                 if (retryMillis > 0) delay(retryMillis)
-                try {
-                    eventMux.subscribe(EventChannel.Session(sid)).collect { frame ->
-                        if (sessionId != sid) return@collect
-                        // Live again: a later drop starts a fresh backoff.
+                if (!chatOnScreen.value) continue
+                val finished = CompletableDeferred<Throwable?>()
+                val streamJob = launch {
+                    var cause: Throwable? = null
+                    try {
+                        eventMux.subscribe(EventChannel.Session(sid)).collect { frame ->
+                            if (sessionId != sid) return@collect
+                            // Live again: a later drop starts a fresh backoff.
+                            retryMillis = SUBSCRIBE_RETRY_MIN_MILLIS
+                            // Slice C consumes its own request/bridge frames so
+                            // the transcript never sees them; side-question frames
+                            // are consumed inside the engine ahead of `observe`.
+                            if (hostTools.onFrame(sid, frame)) return@collect
+                            if (extensionUi.onFrame(frame)) return@collect
+                            controls.onFrame(frame)
+                            engine.onFrame(frame)
+                            // The engine's coalescer owns the flush (16 ms),
+                            // matching the web's message-update coalescer;
+                            // flushing per frame defeated it.
+                            pumpEffects()
+                        }
                         retryMillis = SUBSCRIBE_RETRY_MIN_MILLIS
-                        // Slice C consumes its own request/bridge frames so the
-                        // transcript never sees them; side-question frames are
-                        // consumed inside the engine ahead of `observe`.
-                        if (hostTools.onFrame(sid, frame)) return@collect
-                        if (extensionUi.onFrame(frame)) return@collect
-                        controls.onFrame(frame)
-                        engine.onFrame(frame)
-                        // The engine's coalescer owns the flush (16 ms), matching
-                        // the web's message-update coalescer; flushing per frame
-                        // defeated it.
-                        pumpEffects()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        // An idle session has no server-side wrapper, so the
+                        // channel is refused; the web retries silently with
+                        // capped backoff instead of surfacing an error. The next
+                        // prompt restarts this loop (see [ensureSubscribed]).
+                        cause = error
+                    } finally {
+                        finished.complete(cause)
                     }
-                    retryMillis = SUBSCRIBE_RETRY_MIN_MILLIS
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // An idle session has no server-side wrapper, so the channel
-                    // is refused; the web retries silently with capped backoff
-                    // instead of surfacing an error. The next prompt restarts
-                    // this loop immediately (see ensureSubscribed).
+                }
+                // The chat left the stage (or the app went to the background):
+                // release the server subscription instead of collecting bytes
+                // nobody can read. `unregister` posts the unsubscribe.
+                val gateClosed = launch {
+                    chatOnScreen.first { !it }
+                    streamJob.cancel()
+                }
+                val cause = finished.await()
+                gateClosed.cancel()
+                streamJob.join()
+                if (cause != null) {
                     retryMillis = (retryMillis * 2).coerceIn(
                         SUBSCRIBE_RETRY_MIN_MILLIS,
                         SUBSCRIBE_RETRY_MAX_MILLIS,
                     )
                 }
-                if (sessionId != sid) return@launch
             }
         }
     }

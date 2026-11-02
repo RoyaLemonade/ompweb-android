@@ -272,6 +272,15 @@ class SessionsViewModel(
     val history: StateFlow<NavigationHistory> = _history.asStateFlow()
 
     private val active = MutableStateFlow(false)
+
+    /**
+     * The process is in the foreground (the activity is started). A session
+     * file write behind the lock screen only marks the list stale; the full
+     * reload (list + projects + home, measured at ~130 KB) waits for the
+     * return. The running channel itself is tiny, so it stays subscribed.
+     */
+    private var foreground = true
+    private var staleReload = false
     private val retryTicks = MutableStateFlow(0)
     private var loadJob: Job? = null
     private var delayedLoadJob: Job? = null
@@ -401,6 +410,23 @@ class SessionsViewModel(
     /** The screen became visible ([active] = true) or left the stage. */
     fun setActive(active: Boolean) {
         this.active.value = active
+    }
+
+    /**
+     * The activity started or stopped. Leaving the foreground drops a pending
+     * debounced reload and defers every later one; coming back reloads once if
+     * anything changed while the app was away.
+     */
+    fun setForeground(foreground: Boolean) {
+        this.foreground = foreground
+        if (foreground) {
+            if (!staleReload) return
+            staleReload = false
+            scheduleReload()
+            return
+        }
+        delayedLoadJob?.cancel()
+        delayedLoadJob = null
     }
 
     fun refresh() {
@@ -834,6 +860,14 @@ class SessionsViewModel(
 
     /** Session files change in bursts; one reload per burst is enough. */
     private fun scheduleReload() {
+        if (!foreground) {
+            // Behind the lock screen the list would reload (list + projects +
+            // home) on every session-file write of a running agent, without
+            // anyone reading it. One reload on return is enough — and it is
+            // still debounced.
+            staleReload = true
+            return
+        }
         delayedLoadJob?.cancel()
         delayedLoadJob = viewModelScope.launch {
             delay(RELOAD_DEBOUNCE_MILLIS)

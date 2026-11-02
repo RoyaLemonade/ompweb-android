@@ -739,6 +739,30 @@ class SessionsViewModelTest {
     }
 
     @Test
+    fun `a backgrounded list defers the reload asked for by a sessions-changed frame`() {
+        sessionResponses.add(sessions("""{"sessions":[{"id":"a"}],"runningSessionIds":[]}"""))
+        viewModel.setActive(true)
+        val stream = open()
+        waitFor("initial list") { viewModel.state.value.sessions.size == 1 }
+        waitFor("running subscription") { transport.subscribes.isNotEmpty() }
+
+        // Home button: a running agent keeps writing its session file, and each
+        // write asks the list for a full reload (list + projects + home, ~130 KB
+        // on a real history). Nobody reads the answer behind the lock screen.
+        viewModel.setForeground(false)
+        Thread.sleep(200)
+        val before = server.requestCount
+        stream.send("s1", """{"type":"sessions-changed"}""")
+        Thread.sleep(1_200)
+        assertEquals("no reload while the app is away", before, server.requestCount)
+
+        sessionResponses.add(sessions("""{"sessions":[{"id":"a"},{"id":"b"}],"runningSessionIds":[]}"""))
+        viewModel.setForeground(true)
+        waitFor("the return reloads once") { viewModel.state.value.sessions.size == 2 }
+        assertEquals("a", viewModel.state.value.sessions.first().id)
+    }
+
+    @Test
     fun `a remembered new-session cwd is validated before the pane is restored`() {
         sessionResponses.add(sessions("""{"sessions":[],"runningSessionIds":[]}"""))
         cwdResponses.add(json("""{"success":true,"cwd":"/work/project","projectRoot":"/work"}"""))

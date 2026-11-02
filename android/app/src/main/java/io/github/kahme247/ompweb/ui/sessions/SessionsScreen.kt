@@ -368,6 +368,14 @@ fun SessionsScreen(
         viewModel.setActive(true)
         onDispose { viewModel.setActive(false) }
     }
+    // A `sessions-changed` frame (one per session-file write) reloads list,
+    // projects and home. Behind the lock screen nobody reads that answer, so
+    // the reload waits for the way back instead of running on the radio.
+    val processStarted = LocalLifecycleOwner.current.lifecycle
+        .currentStateAsState()
+        .value
+        .isAtLeast(Lifecycle.State.STARTED)
+    LaunchedEffect(viewModel, processStarted) { viewModel.setForeground(processStarted) }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
     LaunchedEffect(navigator) {
         if (navigator.currentDestination == null) {
