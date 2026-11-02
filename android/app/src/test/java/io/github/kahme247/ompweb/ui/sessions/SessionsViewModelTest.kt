@@ -1020,10 +1020,11 @@ class SessionsViewModelTest {
         viewModel.autoNameSession("s1")
         waitFor("success phase") { viewModel.state.value.autoName.phase == AutoNamePhase.Success }
         assertEquals("Renamed session", viewModel.state.value.autoName.title)
-        assertTrue(
-            "the header feedback names the title",
-            viewModel.state.value.notice?.text?.contains("Title generated: Renamed session") == true,
-        )
+        // The phase is published before the notice; assert the notice by
+        // waiting for it instead of catching the window between the two.
+        waitFor("the header feedback names the title") {
+            viewModel.state.value.notice?.text?.contains("Title generated: Renamed session") == true
+        }
 
         sessionResponses.add(
             sessions("""{"sessions":[{"id":"s1","cwd":"/work/a","messageCount":2}],"runningSessionIds":[]}"""),
@@ -1033,10 +1034,9 @@ class SessionsViewModelTest {
         waitFor("blank answer is an error") {
             viewModel.state.value.autoName.phase == AutoNamePhase.Error
         }
-        assertTrue(
-            "an empty title is never shown as success",
-            viewModel.state.value.notice?.text?.contains("empty title") == true,
-        )
+        waitFor("a blank answer is never shown as success") {
+            viewModel.state.value.notice?.text?.contains("empty title") == true
+        }
     }
 
     @Test
