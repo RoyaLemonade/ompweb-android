@@ -211,8 +211,8 @@ fun OmpWebRoot(container: AppContainer) {
                         viewModel(factory = container.settingsViewModelFactory)
                     val updateNotice by settingsViewModel.updateNotice.collectAsStateWithLifecycle()
                     // The app's own update notice: GitHub Releases, cached for
-                    // six hours on a cold start and revalidated on a return to
-                    // the foreground once the answer is older than 30 minutes.
+                    // six hours on a cold start and on a return to the
+                    // foreground; only the settings button forces a check.
                     // The shell checks once content is on screen; the container
                     // owns the foreground rule. It is independent of the
                     // connected server, so it keeps its own state.
@@ -321,6 +321,7 @@ fun OmpWebRoot(container: AppContainer) {
                                         container.androidUpdates.openInstallPermissionSettings()
                                     },
                                     onConfirmInstall = { container.androidUpdates.confirmInstall() },
+                                    onConfirmMetered = { container.androidUpdates.confirmMeteredDownload() },
                                     onCancelInstall = { container.androidUpdates.cancelInstall() },
                                     onOpenRelease = { notice ->
                                         notice.releaseUrl?.let { url ->

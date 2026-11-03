@@ -29,8 +29,12 @@ interface ComposerControlsApi {
     /** `GET /api/models?cwd=` — the live model catalog the picker builds its rows from. */
     suspend fun models(cwd: String?): ModelsResponse
 
-    /** `GET /api/agent/{id}` — `{running, state}`; never spawns a process. */
-    suspend fun agentState(sessionId: String): JsonObject
+    /**
+     * `GET /api/agent/{id}` — `{running, state}`; never spawns a process.
+     * [systemPrompt] is off for the live-state polls: the composer only needs
+     * the config, and the prompt is the bulk of the answer.
+     */
+    suspend fun agentState(sessionId: String, systemPrompt: Boolean = false): JsonObject
 
     /**
      * `POST /api/agent/{id}` — one omp RPC command, returning the route's

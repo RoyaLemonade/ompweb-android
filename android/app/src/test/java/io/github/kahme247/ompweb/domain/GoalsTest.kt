@@ -132,6 +132,37 @@ class GoalsTest {
         assertNull(parseGoalFromCommandData(null))
     }
 
+    @Test
+    fun `a get_state goal mode wrapper exposes the nested goal`() {
+        val state = obj(
+            """{"enabled":true,"mode":"active",
+                "goal":{"id":"g","objective":"ship it","status":"active","tokensUsed":7}}""",
+        )
+
+        val goal = parseGoalSnapshot(state)!!
+        assertEquals("ship it", goal.objective)
+        assertEquals(7L, goal.tokensUsed)
+
+        // No active goal in the mode wrapper: nothing to show.
+        assertNull(parseGoalSnapshot(obj("""{"enabled":false,"mode":"idle","goal":null}""")))
+        // The flat shape of an older omp is still understood.
+        assertEquals(
+            "flat",
+            parseGoalSnapshot(obj("""{"id":"g","objective":"flat","status":"active"}"""))!!.objective,
+        )
+    }
+
+    @Test
+    fun `a budget-limited goal is visible but not paused`() {
+        val goal = parseGoal(
+            obj("""{"id":"g","objective":"ship it","status":"budget-limited","tokenBudget":5000,"tokensUsed":5000}"""),
+        )!!
+
+        assertTrue(goal.visible)
+        assertTrue(goal.budgetLimited)
+        assertFalse(goal.paused)
+    }
+
     // ------------------------------------------------------------ fallback
 
     @Test

@@ -512,8 +512,8 @@ class ApiClientTest {
         val api = client()
 
         val results = runBlocking {
-            val first = async { api.sessionDetail("s1") }
-            val second = async { api.sessionDetail("s1") }
+            val first = async { api.sessionDetail("s1", meta = true) }
+            val second = async { api.sessionDetail("s1", meta = true) }
             first.await() to second.await()
         }
 
@@ -532,11 +532,29 @@ class ApiClientTest {
         )
         val api = client()
 
-        val first = runBlocking { api.sessionDetail("s1") }
-        val second = runBlocking { api.sessionDetail("s1") }
+        val first = runBlocking { api.sessionDetail("s1", meta = true) }
+        val second = runBlocking { api.sessionDetail("s1", meta = true) }
 
         assertEquals("the header and the chat share the transcript transfer", 1, server.requestCount)
         assertEquals(first.leafId, second.leafId)
+    }
+
+    @Test
+    fun `a metadata answer never satisfies a full-detail request`() {
+        val metaBody = """{"sessionId":"s1","leafId":"e2","info":{"id":"s1","cwd":"C:/repo"},"tree":[]}"""
+        val fullBody = """{"sessionId":"s1","leafId":"e2","info":{"id":"s1","cwd":"C:/repo"},"context":{"messages":[{"role":"user","content":"hi"}]}}"""
+        server.enqueue(json(200, metaBody))
+        server.enqueue(json(200, fullBody))
+        val api = client()
+
+        val meta = runBlocking { api.sessionDetail("s1", meta = true) }
+        val full = runBlocking { api.sessionDetail("s1", meta = false) }
+
+        assertEquals("the metadata shape carries no transcript", null, meta.context)
+        assertEquals("the full shape carries the messages", 1, full.context?.messages?.size)
+        assertEquals("separate shapes, separate requests", 2, server.requestCount)
+        val paths = List(2) { server.takeRequest(2, TimeUnit.SECONDS)?.path }
+        assertEquals(listOf("/api/sessions/s1?meta=1", "/api/sessions/s1"), paths)
     }
 
     @Test
@@ -550,8 +568,8 @@ class ApiClientTest {
         )
         val api = client()
 
-        assertThrows(ApiError.Http::class.java) { runBlocking { api.sessionDetail("s1") } }
-        assertEquals("e2", runBlocking { api.sessionDetail("s1") }.leafId)
+        assertThrows(ApiError.Http::class.java) { runBlocking { api.sessionDetail("s1", meta = true) } }
+        assertEquals("e2", runBlocking { api.sessionDetail("s1", meta = true) }.leafId)
         assertEquals(2, server.requestCount)
     }
 
@@ -606,14 +624,14 @@ class ApiClientTest {
         server.enqueue(json(404, """{"error":"Session not found"}"""))
         val api = client()
 
-        assertEquals("Old", runBlocking { api.sessionDetail("s1") }.info?.name)
+        assertEquals("Old", runBlocking { api.sessionDetail("s1", meta = true) }.info?.name)
         runBlocking { api.renameSession("s1", "New") }
 
         // Without the invalidation this would join the two-second window and
         // answer with the pre-rename body.
         api.invalidateSessionDetail("s1")
 
-        assertThrows(ApiError.Http::class.java) { runBlocking { api.sessionDetail("s1") } }
+        assertThrows(ApiError.Http::class.java) { runBlocking { api.sessionDetail("s1", meta = true) } }
         assertEquals("the next open really asks the server", 3, server.requestCount)
     }
 
@@ -624,9 +642,9 @@ class ApiClientTest {
         val api = client()
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-        val owner = scope.launch { runCatching { api.sessionDetail("s1") } }
+        val owner = scope.launch { runCatching { api.sessionDetail("s1", meta = true) } }
         assertNotNull("the owner's request is on the wire", server.takeRequest(2, TimeUnit.SECONDS))
-        val joiner = scope.async { runCatching { api.sessionDetail("s1") } }
+        val joiner = scope.async { runCatching { api.sessionDetail("s1", meta = true) } }
         // The joiner must be inside the shared flight before the owner leaves.
         Thread.sleep(100)
         runBlocking { owner.cancelAndJoin() }
@@ -660,10 +678,10 @@ class ApiClientTest {
 
         runBlocking {
             api.sessions()
-            api.sessionDetail("s1")
+            api.sessionDetail("s1", meta = true)
             api.clearMemoryCaches()
             api.sessions()
-            api.sessionDetail("s1")
+            api.sessionDetail("s1", meta = true)
         }
 
         val requests = List(4) { index ->

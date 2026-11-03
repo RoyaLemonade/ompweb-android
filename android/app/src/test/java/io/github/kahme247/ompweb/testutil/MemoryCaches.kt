@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.testutil
 
 import io.github.kahme247.ompweb.data.CachedSessionList
+import io.github.kahme247.ompweb.data.CachedTranscript
 import io.github.kahme247.ompweb.data.SessionActivity
 import io.github.kahme247.ompweb.data.SessionListCache
 import io.github.kahme247.ompweb.data.TranscriptCache
@@ -40,12 +41,12 @@ class MemoryTranscriptCache : TranscriptCache {
         val includePreCompaction: Boolean,
     )
 
-    private val entries = LinkedHashMap<Key, String>()
+    private val entries = LinkedHashMap<Key, CachedTranscript>()
 
     /** Every write, in order, so a test can prove what was persisted. */
     val writes = mutableListOf<Key>()
 
-    override fun read(origin: String, sessionId: String, leafId: String?, includePreCompaction: Boolean): String? =
+    override fun read(origin: String, sessionId: String, leafId: String?, includePreCompaction: Boolean): CachedTranscript? =
         entries[Key(origin, sessionId, leafId, includePreCompaction)]
 
     override fun write(
@@ -54,9 +55,10 @@ class MemoryTranscriptCache : TranscriptCache {
         leafId: String?,
         includePreCompaction: Boolean,
         body: String,
+        etag: String?,
     ) {
         val key = Key(origin, sessionId, leafId, includePreCompaction)
-        entries[key] = body
+        entries[key] = CachedTranscript(body = body, etag = etag)
         writes += key
     }
 }

@@ -65,12 +65,27 @@ class SessionActivityStore(
     /** Whether the file has been read; guarded by [lock]. */
     private var loaded = false
 
+    /**
+     * Bumped by every [clear] before its coroutine runs. A read that started
+     * under an older generation may not merge its (pre-clear) file into the
+     * map, or the next [record] would write the forgotten ids again.
+     */
+    @Volatile
+    private var generation = 0L
+
+    /** A clear is in flight: a late [record] belongs to nobody and is ignored. */
+    @Volatile
+    private var clearing = false
+
     init {
         scope.launch { ensureLoaded() }
     }
 
     override fun record(sessionId: String, at: Long) {
         if (sessionId.isBlank() || at <= 0) return
+        // A frame that arrives while the state is being forgotten (logout, a
+        // 401, a server switch) must not survive the clear.
+        if (clearing) return
         val current = _known.value
         val previous = current[sessionId]
         if (previous != null && previous >= at) return
@@ -83,11 +98,19 @@ class SessionActivityStore(
     }
 
     override fun clear() {
+        // Synchronously first: readers see "forgotten" at once, and no read
+        // that was already in flight may write the old map back.
+        clearing = true
+        generation++
         _known.value = emptyMap()
         scope.launch {
-            lock.withLock {
-                loaded = true
-                withContext(io) { runCatching { file.delete() } }
+            try {
+                lock.withLock {
+                    loaded = true
+                    withContext(io) { runCatching { file.delete() } }
+                }
+            } finally {
+                clearing = false
             }
         }
     }
@@ -95,19 +118,29 @@ class SessionActivityStore(
     /**
      * Read the file once. A [record] that lands while the read is in flight
      * keeps its (newer) value: the merge prefers the larger instant per id.
+     * A [clear] during the read wins: its file is gone, so the answer is not
+     * merged at all.
      */
     private suspend fun ensureLoaded() {
         lock.withLock {
             if (loaded) return
+            val startedAt = generation
             val stored = withContext(io) { read() }
+            if (startedAt != generation) return
             _known.value = trim(merge(stored, _known.value))
             loaded = true
         }
     }
 
+    /**
+     * Write the current map. A clear that started meanwhile owns the file: an
+     * answer from a pre-clear load is never written back, which is what made
+     * the forgotten ids reappear on the next record.
+     */
     private suspend fun persist() {
         ensureLoaded()
         lock.withLock {
+            if (!loaded || clearing) return
             val snapshot = _known.value
             withContext(io) { write(snapshot) }
         }

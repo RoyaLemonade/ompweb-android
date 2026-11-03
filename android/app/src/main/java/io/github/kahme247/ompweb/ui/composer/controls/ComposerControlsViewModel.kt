@@ -54,6 +54,12 @@ class ComposerControlsViewModel(
     private val api: ComposerControlsApi,
     private val settings: ChatSettings,
     private val scope: CoroutineScope,
+    /**
+     * The `GET /api/models` answers of this process, keyed by origin and cwd;
+     * the container shares one instance so the new-session pane and every chat
+     * reuse the same 310 KB catalog (P3).
+     */
+    private val catalogCache: ModelCatalogCache = ModelCatalogCache(),
 ) {
 
     private val _state = MutableStateFlow(ComposerControlsState())
@@ -646,11 +652,24 @@ class ComposerControlsViewModel(
     private fun loadCatalog(cwd: String) {
         catalogJob?.cancel()
         val fence = ++catalogFence
+        // The catalog belongs to one server: a switched origin must never be
+        // answered with the old installation's providers (same cwd string).
+        val origin = settings.snapshot.value.origin?.origin.orEmpty()
+        // A catalog younger than the TTL answers without a request: every chat
+        // open/switch used to re-download it.
+        catalogCache.get(origin, cwd)?.let { cached ->
+            catalog = cached
+            catalogLoaded = true
+            _state.update { it.copy(modelsLoading = false, modelsError = null) }
+            refreshDerived()
+            return
+        }
         _state.update { it.copy(modelsLoading = true, modelsError = null) }
         catalogJob = scope.launch {
             try {
                 val response = api.models(cwd)
                 if (fence != catalogFence) return@launch
+                catalogCache.put(origin, cwd, response)
                 catalog = response
                 catalogLoaded = true
                 refreshDerived()

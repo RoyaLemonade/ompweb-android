@@ -220,10 +220,12 @@
     <string name="android_update_banner_confirming">Confirm the installation in the Android dialog.</string>
     <string name="android_update_banner_confirm">Confirm install</string>
     <string name="android_update_banner_permission">Allow ompweb to install updates in Android settings.</string>
+    <string name="android_update_banner_metered">Download over mobile data? About %1$s MB.</string>
+    <string name="android_update_banner_metered_confirm">Download</string>
     <string name="system_android_update_title">Android app update</string>
     <string name="system_android_update_installed">Installed: %1$s</string>
     <string name="system_android_update_source_desc">GitHub Releases, or a custom feed that describes the newest APK.</string>
-    <string name="system_android_update_auto_checks">Checks on start, after an app update and when you return after 30 minutes</string>
+    <string name="system_android_update_auto_checks">Checks on start, after an app update and every six hours in the foreground</string>
     <string name="system_android_update_github">GitHub Releases</string>
     <string name="system_android_update_custom">Custom feed URL</string>
     <string name="system_android_update_feed_hint">https://example.com/ompweb/latest.json</string>

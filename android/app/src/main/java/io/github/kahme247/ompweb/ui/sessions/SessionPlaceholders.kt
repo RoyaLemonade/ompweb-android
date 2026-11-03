@@ -81,3 +81,28 @@ internal fun withPlaceholderProjects(
         .map { path -> ManagedProject(path = path) }
     return projects + extra
 }
+
+/**
+ * Rows for every workspace a session names, for the case `GET /api/projects`
+ * cannot answer: the request failed, or it has not answered yet (the session
+ * list usually lands first). `groupSessionsByProject` drops sessions whose
+ * workspace has no row, so without this a failed project request hid the whole
+ * session list behind an empty state.
+ *
+ * This is deliberately a fallback and never replaces a successful answer: the
+ * server is the only side that knows which projects are hidden, and it leaves
+ * them out of `/api/projects` while their sessions stay in `/api/sessions`.
+ * Deriving rows from sessions in the normal case resurrected exactly those
+ * hidden projects.
+ */
+internal fun withWorkspaceProjects(
+    projects: List<ManagedProject>,
+    sessions: List<SessionSummary>,
+): List<ManagedProject> {
+    val known = projects.mapTo(HashSet()) { comparableProjectPath(it.path) }
+    val extra = sessions.mapNotNull(::workspaceKeyOf)
+        .distinct()
+        .filter { comparableProjectPath(it) !in known }
+        .map { path -> ManagedProject(path = path) }
+    return projects + extra
+}

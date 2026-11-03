@@ -27,6 +27,40 @@ data class AppInfo(
      * answers a different (NDJSON) shape.
      */
     val supportsMessageSearch: Boolean get() = capabilities["messageSearch"] == true
+
+    /**
+     * `capabilities.presenceOptional`: the server delivers a native client's
+     * notifications through its open `notifications` stream even without a
+     * presence entry, so a backgrounded app needs no presence reports
+     * (`NotificationCenter` keeps the kill-switch for a visible chat).
+     */
+    val supportsPresenceOptional: Boolean get() = capabilities["presenceOptional"] == true
+
+    /**
+     * `capabilities.sessionMeta`: `GET /api/sessions/{id}?meta=1` answers the
+     * session header and the branch tree without shipping the transcript, and
+     * its `info` carries the model, the thinking level and `lastMessageAt`.
+     * The app asks for that shape wherever it needs no messages (chat
+     * metadata, session details) and asks for the full body only for the
+     * copy-transcript action (`ApiClient.sessionDetail(meta = false)`). A
+     * server that does not know the flag ignores it and answers the full body.
+     */
+    val supportsSessionMeta: Boolean get() = capabilities["sessionMeta"] == true
+
+    /**
+     * `capabilities.contextEtag`: `GET /api/sessions/{id}/context` sends an
+     * `ETag`, so an unchanged view is a `304` instead of a full transcript
+     * (`ChatViewModel.loadFullHistory` revalidates with it).
+     */
+    val supportsContextEtag: Boolean get() = capabilities["contextEtag"] == true
+
+    /**
+     * `capabilities.stateSystemPromptOptional`: `GET /api/agent/{id}?systemPrompt=0`
+     * omits the (large) system prompt from the live state; only the
+     * system-prompt panel asks for it.
+     */
+    val supportsStateSystemPromptOptional: Boolean
+        get() = capabilities["stateSystemPromptOptional"] == true
 }
 
 /**
@@ -41,6 +75,12 @@ data class SessionSummary(
     val name: String? = null,
     val created: String = "",
     val modified: String = "",
+    /**
+     * Newest user/assistant message (ISO 8601), when the server reads it.
+     * `modified` is the file's mtime, which omp also bumps on a resume, so the
+     * workspace prefers this value when it is present (`withKnownActivity`).
+     */
+    val lastMessageAt: String? = null,
     val messageCount: Int = 0,
     val firstMessage: String = "",
     val parentSessionId: String? = null,
@@ -165,7 +205,15 @@ data class ProjectList(val projects: List<ManagedProject> = emptyList())
 @Serializable
 data class ProjectResponse(val project: ManagedProject? = null)
 
-/** `GET /api/sessions/{id}` — only the fields the session header needs. */
+/**
+ * `GET /api/sessions/{id}` — only the fields the session header needs.
+ *
+ * [model] and [thinkingLevel] are the session file's model choice and
+ * reasoning level. The server's `?meta=1` shape carries them in `info` (the
+ * transcript is omitted there), so the details dialog reads them from here;
+ * an older server, which ignores `meta` and answers the full body, still
+ * reports them under `context` instead.
+ */
 @Serializable
 data class SessionInfo(
     val path: String = "",
@@ -174,6 +222,10 @@ data class SessionInfo(
     val name: String? = null,
     val created: String = "",
     val modified: String = "",
+    /** Newest message (ISO 8601) when the server reports it; see [SessionSummary.lastMessageAt]. */
+    val lastMessageAt: String? = null,
+    val model: SessionModel? = null,
+    val thinkingLevel: String? = null,
     val messageCount: Int = 0,
     val firstMessage: String = "",
     val parentSessionId: String? = null,
@@ -186,7 +238,13 @@ data class SessionInfo(
 data class SessionModel(
     val provider: String = "",
     @SerialName("modelId") val modelId: String = "",
-)
+) {
+    /** `provider/modelId`, blank parts dropped; null without either part. */
+    fun qualifiedId(): String? = listOfNotNull(
+        provider.takeIf { it.isNotBlank() },
+        modelId.takeIf { it.isNotBlank() },
+    ).joinToString("/").takeIf { it.isNotEmpty() }
+}
 
 /**
  * The context part of `GET /api/sessions/{id}`. Messages stay as raw JSON

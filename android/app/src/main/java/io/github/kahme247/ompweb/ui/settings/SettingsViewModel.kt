@@ -741,7 +741,16 @@ class SettingsViewModel(
     /** Bumped per fetch so a replaced one cannot publish its answer late. */
     private var usageGeneration = 0
 
+    /**
+     * A segmented control sends one change per tap; a scan of the whole
+     * transcript history per intermediate selection would queue behind the
+     * others on the server. Only the settled selection is fetched.
+     */
+    private var usageDebounceJob: Job? = null
+
     fun loadUsage(force: Boolean = false) {
+        usageDebounceJob?.cancel()
+        usageDebounceJob = null
         val current = _usage.value
         val generation = ++usageGeneration
         usageJob?.cancel()
@@ -775,13 +784,22 @@ class SettingsViewModel(
     fun setUsageRange(range: UsageTimeRange) {
         if (_usage.value.range == range) return
         _usage.update { it.copy(range = range) }
-        loadUsage()
+        scheduleUsageLoad()
     }
 
     fun setUsageGranularity(granularity: UsageGranularity) {
         if (_usage.value.granularity == granularity) return
         _usage.update { it.copy(granularity = granularity) }
-        loadUsage()
+        scheduleUsageLoad()
+    }
+
+    /** One fetch for a settled range/granularity selection (see [usageDebounceJob]). */
+    private fun scheduleUsageLoad() {
+        usageDebounceJob?.cancel()
+        usageDebounceJob = viewModelScope.launch {
+            delay(USAGE_DEBOUNCE_MILLIS)
+            loadUsage()
+        }
     }
 
     /** Web `metricView` toggle; the chart re-renders from the same report. */
@@ -830,6 +848,13 @@ class SettingsViewModel(
 
         /** Web `AppUpdateDialog`: fifteen minutes, here the status poll's budget. */
         const val UPDATE_TIMEOUT_MS: Long = 15 * 60_000L
+
+        /**
+         * A range/granularity tap is only fetched once the selection rests this
+         * long. The server serialises usage scans, so a burst of taps must not
+         * enqueue a scan for every intermediate value.
+         */
+        const val USAGE_DEBOUNCE_MILLIS: Long = 300L
 
         fun formatAgentEnv(agentEnv: Map<String, String>): String = AgentEnv.format(agentEnv)
     }

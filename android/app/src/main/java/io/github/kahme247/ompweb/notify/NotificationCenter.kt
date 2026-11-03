@@ -20,6 +20,8 @@ import io.github.kahme247.ompweb.domain.NotifyProject
 import io.github.kahme247.ompweb.domain.NotifyRuntimeAction
 import io.github.kahme247.ompweb.domain.NotifyType
 import io.github.kahme247.ompweb.domain.NotifyWhenActive
+import io.github.kahme247.ompweb.domain.PRESENCE_RETRY_MILLIS
+import io.github.kahme247.ompweb.domain.PRESENCE_TTL_MILLIS
 import io.github.kahme247.ompweb.domain.PresenceReport
 import io.github.kahme247.ompweb.domain.inAppNotice
 import io.github.kahme247.ompweb.domain.isValidNotificationId
@@ -93,6 +95,15 @@ class NotificationCenter(
     private val mux: EventMux,
     private val scope: CoroutineScope,
     private val isSignedIn: () -> Boolean,
+    /**
+     * `GET /api/app-info`'s `capabilities.presenceOptional`: the server routes
+     * notifications to a native device without a presence entry, so a missing
+     * entry means "not visible". Then the 45 s beat exists only to suppress the
+     * chat the user is reading — while that chat is visible in the foreground —
+     * and a backgrounded app needs no reports at all (P7). A server without
+     * the capability keeps the old unconditional keep-alive.
+     */
+    private val presenceOptional: StateFlow<Boolean> = MutableStateFlow(false),
     /** The answer receiver replaces a notification with its result text. */
     internal val notifier: Notifier = AndroidNotifier(
         context.applicationContext,
@@ -164,13 +175,30 @@ class NotificationCenter(
     private var runningJob: Job? = null
     private var presenceJob: Job? = null
 
+    /**
+     * The retry of a failed `visible:false` transition report (see
+     * [deliverPresence]). Cancelled by the next window state.
+     */
+    private var presenceRetryJob: Job? = null
+
     private val presenceLock = Any()
     private var presenceSeq = 0L
     private var appForeground = false
     private var visibleSession: String? = null
 
+    /**
+     * Whether the capability-aware keep-alive has work: a chat is visible in a
+     * foreground app. Only read while [presenceOptional] is true; the loop
+     * waits on this instead of beating behind the lock screen.
+     */
+    private val presenceWanted = MutableStateFlow(false)
+
     init {
         notifier.ensureChannels()
+        // The capability can arrive after the runtime started (app-info loads
+        // with the shell). Refresh the demand instead of waiting for the next
+        // window change.
+        scope.launch { presenceOptional.collect { updatePresenceWanted() } }
         scope.launch {
             settings.snapshot
                 .map { snapshot -> Triple(snapshot.loaded, snapshot.origin, snapshot.notifyPrefs) }
@@ -219,6 +247,9 @@ class NotificationCenter(
         val identity = snapshot.identityOrNull()
         val origin = snapshot.origin
         NotificationService.stop(context)
+        // A pending transition retry names the identity being forgotten.
+        presenceRetryJob?.cancel()
+        presenceRetryJob = null
         notifier.cancelAll()
         _notices.value = emptyList()
         teardown.run(
@@ -279,7 +310,7 @@ class NotificationCenter(
                 mux.setPersistent(true)
                 notificationJob = scope.launch {
                     try {
-                        mux.subscribe(EventChannel.Notifications(identity.clientId)).collect { frame ->
+                        mux.subscribe(EventChannel.Notifications(identity.clientId, identity.deviceId)).collect { frame ->
                             deliverFrame(frame)
                         }
                     } catch (cancelled: CancellationException) {
@@ -308,8 +339,17 @@ class NotificationCenter(
                         // while the server is down or Doze holds the socket, and
                         // it refreshes the entry right after every reconnect.
                         mux.state.first { it == ConnectionState.Connected }
+                        // With `presenceOptional` the entry only suppresses the
+                        // chat on screen, so the beat waits for one and stops
+                        // again when it leaves; the window change itself sent
+                        // its report. Without the capability the old
+                        // unconditional keep-alive stays.
+                        if (presenceOptional.value) presenceWanted.first { it }
                         val delivered = reportPresenceNow()
                         delay(nextPresenceDelayMillis(delivered))
+                        // A hidden chat or a backgrounded app ends the beat
+                        // until the next visibility change.
+                        if (presenceOptional.value) presenceWanted.first { it }
                     }
                 }
             }
@@ -356,6 +396,7 @@ class NotificationCenter(
             synchronized(presenceLock) { visibleSession }?.let(::clearSessionArtifacts)
         }
         if (changed) reportPresence()
+        updatePresenceWanted()
     }
 
     /** The chat currently on screen, or null on any other view. */
@@ -374,6 +415,18 @@ class NotificationCenter(
         // keeps its notification until the user actually returns to it.
         if (normalized != null && isAppForeground()) clearSessionArtifacts(normalized)
         if (changed) reportPresence()
+        updatePresenceWanted()
+    }
+
+    /**
+     * Recomputes whether the capability-aware keep-alive has anything to keep
+     * alive. Called from the two window setters and from the capability
+     * itself, never from a frame handler.
+     */
+    private fun updatePresenceWanted() {
+        val wanted = presenceOptional.value && isAppForeground() &&
+            synchronized(presenceLock) { visibleSession != null }
+        presenceWanted.value = wanted
     }
 
     /**
@@ -416,7 +469,53 @@ class NotificationCenter(
         // reporting it as "viewing" would suppress the user's other devices.
         if (!settings.snapshot.value.notifyPrefs.enabled) return
         val report = presenceReport() ?: return
+        // Every state change supersedes a pending retry: this report (and the
+        // ones after it) carry the window state the retry would repeat.
+        presenceRetryJob?.cancel()
+        presenceRetryJob = null
+        if (presenceOptional.value && !report.visible) {
+            // The report that ends the server's "on screen" suppression must
+            // arrive: a dropped POST leaves the entry visible for its whole TTL
+            // and drops every `os` frame of that chat — the keep-alive parks
+            // while the app is in the background, so nothing else repairs it.
+            presenceRetryJob = scope.launch { deliverPresence(report) }
+            return
+        }
         scope.launch { api.reportPresence(report) }
+    }
+
+    /**
+     * One presence report, retried every [PRESENCE_RETRY_MILLIS] while the
+     * server keeps refusing or dropping it, as long as the state it reports is
+     * still the state on screen. A newer window state cancels this job in
+     * [reportPresence]; the app returning to a visible chat ends it here.
+     *
+     * The response ends at the server's TTL: the last report's entry expires
+     * on its own after [PRESENCE_TTL_MILLIS], which also ends the suppression
+     * this retry is repairing. Waking the radio past that point cannot improve
+     * anything.
+     */
+    private suspend fun deliverPresence(report: PresenceReport) {
+        val attempts = (PRESENCE_TTL_MILLIS / PRESENCE_RETRY_MILLIS).toInt()
+        var next = report
+        for (attempt in 1..attempts) {
+            val delivered = try {
+                api.reportPresence(next)
+                true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                false
+            }
+            if (delivered) return
+            if (attempt == attempts) return
+            delay(PRESENCE_RETRY_MILLIS)
+            // Another report may have superseded this one while it was on the
+            // wire; the current state is the only one worth repeating.
+            if (!presenceOptional.value) return
+            next = presenceReport() ?: return
+            if (next.visible) return
+        }
     }
 
     /**

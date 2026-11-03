@@ -63,6 +63,7 @@ class SettingsProvidersHostViewModel(container: AppContainer) : ViewModel() {
         auth = container.api.authApi(),
         settings = container.settings,
         scope = viewModelScope,
+        onModelsConfigSaved = container.modelCatalog::invalidate,
     )
 }
 

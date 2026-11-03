@@ -6,6 +6,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 /**
+ * One raw `GET .../context` answer. [body] is null for `304 Not Modified`:
+ * the caller's cached body for the same view is current, and [etag] is the
+ * validator to keep (servers echo it on 304).
+ */
+data class ContextRawResponse(val body: String?, val etag: String?)
+
+/**
  * The [ApiClient] calls the chat view model makes, as an interface so the view
  * model runs in JVM tests without a server.
  *
@@ -28,8 +35,14 @@ interface ChatApi {
         force: Boolean = false,
     ): JsonElement?
 
-    /** `GET /api/agent/{id}` — `{running, alive, state}` for reconciliation. */
-    suspend fun agentState(sessionId: String): JsonObject
+    /**
+     * `GET /api/agent/{id}` — `{running, alive, state}` for reconciliation.
+     * [systemPrompt] asks for the composed prompt as well; polls and the
+     * reconcile loop leave it off (`?systemPrompt=0`), because it is the bulk
+     * of the answer and only the prompt panel shows it. An older server
+     * ignores the parameter and always sends the field.
+     */
+    suspend fun agentState(sessionId: String, systemPrompt: Boolean): JsonObject
 
     /**
      * `GET /api/sessions` — the ids this server currently runs a turn for.
@@ -130,7 +143,31 @@ interface ChatApi {
         deferMedia: Boolean = true,
     ): String = contextFull(sessionId, leafId, includePreCompaction, deferThinking, deferMedia).toString()
 
-    suspend fun sessionDetail(id: String): SessionDetail
+    /**
+     * [contextFullRaw] as a conditional request: [etag] of the cached answer
+     * for this exact view goes out as `If-None-Match`, and a match answers
+     * `304` with [ContextRawResponse.body] = null — the cached body is the
+     * truth then. Without a cached validator (or against an older server
+     * without ETag support) this is a normal 200.
+     */
+    suspend fun contextFullConditional(
+        sessionId: String,
+        leafId: String? = null,
+        includePreCompaction: Boolean = false,
+        deferThinking: Boolean = true,
+        deferMedia: Boolean = true,
+        etag: String? = null,
+    ): ContextRawResponse = ContextRawResponse(
+        body = contextFullRaw(sessionId, leafId, includePreCompaction, deferThinking, deferMedia),
+        etag = null,
+    )
+
+    /**
+     * `GET /api/sessions/{id}` — with [meta] the `?meta=1` shape (header,
+     * branch tree, no transcript), otherwise the full body including
+     * `context.messages` (the copy-transcript path).
+     */
+    suspend fun sessionDetail(id: String, meta: Boolean): SessionDetail
 
     /** `GET /api/github-repo?cwd=` — `owner/repo` for the checkout, or null. */
     suspend fun githubRepo(cwd: String): String?

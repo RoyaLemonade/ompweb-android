@@ -1371,7 +1371,11 @@ internal fun ComposerModeStatus(
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (goal != null) {
             val status = stringResource(
-                if (goal.paused) R.string.panels_goal_paused else R.string.panels_goal_active,
+                when {
+                    goal.paused -> R.string.panels_goal_paused
+                    goal.budgetLimited -> R.string.panels_goal_budget_limited
+                    else -> R.string.panels_goal_active
+                },
             )
             val budget = when {
                 goal.tokenBudget != null -> stringResource(
@@ -1433,13 +1437,17 @@ internal fun ComposerModeStatus(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    TextButton(onClick = if (goal.paused) onResumeGoal else onPauseGoal) {
-                        Text(
-                            text = stringResource(
-                                if (goal.paused) R.string.panels_goal_resume else R.string.panels_goal_pause,
-                            ),
-                            fontSize = 11.sp,
-                        )
+                    // A goal whose budget is spent cannot be paused (omp only
+                    // ends or continues it); Drop stays available.
+                    if (!goal.budgetLimited) {
+                        TextButton(onClick = if (goal.paused) onResumeGoal else onPauseGoal) {
+                            Text(
+                                text = stringResource(
+                                    if (goal.paused) R.string.panels_goal_resume else R.string.panels_goal_pause,
+                                ),
+                                fontSize = 11.sp,
+                            )
+                        }
                     }
                     TextButton(onClick = onDropGoal) {
                         Text(text = stringResource(R.string.panels_goal_drop), fontSize = 11.sp)

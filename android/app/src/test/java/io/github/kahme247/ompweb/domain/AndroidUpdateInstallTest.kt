@@ -17,7 +17,7 @@ class AndroidUpdateInstallTest {
     private fun identity(
         packageName: String = PACKAGE,
         versionCode: Long = 10001,
-        signer: String = "d73354b52dc7c3f0c74623c439ddb7b52e252811c6e6b5f851c9d04b7015fc87",
+        signer: String = RELEASE_SIGNER,
     ) = AndroidApkIdentity(
         packageName = packageName,
         versionCode = versionCode,
@@ -31,6 +31,7 @@ class AndroidUpdateInstallTest {
         announcedVersionCode: Long? = 10001,
         expectedSha256: String = sha,
         actualSha256: String = sha,
+        expectedSignerSha256: String = RELEASE_SIGNER,
     ) = decideAndroidUpdateInstall(
         appPackageName = PACKAGE,
         installed = installed,
@@ -38,6 +39,7 @@ class AndroidUpdateInstallTest {
         announcedVersionCode = announcedVersionCode,
         expectedSha256 = expectedSha256,
         actualSha256 = actualSha256,
+        expectedSignerSha256 = expectedSignerSha256,
     )
 
     @Test
@@ -66,7 +68,32 @@ class AndroidUpdateInstallTest {
             downloaded = identity(signer = "06d9d698c6a43f643a27643618fd4f7d431d26d4"),
         ) as AndroidInstallDecision.Refuse
 
-        assertTrue(decision.message.contains("different key"))
+        assertTrue("the pinned release certificate is not the download's: ${decision.message}",
+            decision.message.contains("release certificate") ||
+                decision.message.contains("different key"))
+    }
+
+    @Test
+    fun `a foreign-key installation cannot install a self-signed update`() {
+        // Both sides are signed with the same foreign key: the installed-signer
+        // check alone passes, which is exactly how a forged feed could replace
+        // a debug- or foreign-key installation. The pinned release certificate
+        // refuses it regardless.
+        val foreignKey = "06d9d698c6a43f643a27643618fd4f7d431d26d4"
+
+        val decision = decide(
+            installed = identity(versionCode = 10000, signer = foreignKey),
+            downloaded = identity(signer = foreignKey),
+        ) as AndroidInstallDecision.Refuse
+
+        assertTrue(decision.message.contains("release certificate"))
+    }
+
+    @Test
+    fun `a build without a pinned certificate refuses every download`() {
+        val decision = decide(expectedSignerSha256 = "") as AndroidInstallDecision.Refuse
+
+        assertTrue(decision.message.contains("no release signing certificate"))
     }
 
     @Test
@@ -136,5 +163,9 @@ class AndroidUpdateInstallTest {
 
     private companion object {
         const val PACKAGE = "io.github.kahme247.ompweb"
+
+        /** The pinned release certificate (`BuildConfig.RELEASE_SIGNING_SHA256`). */
+        const val RELEASE_SIGNER =
+            "d73354b52dc7c3f0c74623c439ddb7b52e252811c6e6b5f851c9d04b7015fc87"
     }
 }

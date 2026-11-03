@@ -42,6 +42,15 @@ fun decideAndroidUpdateInstall(
     announcedVersionCode: Long?,
     expectedSha256: String,
     actualSha256: String,
+    /**
+     * SHA-256 of the release signing certificate this build pins
+     * (`BuildConfig.RELEASE_SIGNING_SHA256`). The downloaded APK must carry
+     * exactly this certificate, not just the installed app's: a debug- or
+     * foreign-key installation would otherwise accept any key it already
+     * trusts, and the feed's checksum comes from the same unauthenticated
+     * source as the APK.
+     */
+    expectedSignerSha256: String,
 ): AndroidInstallDecision {
     if (downloaded == null) {
         return AndroidInstallDecision.Refuse(
@@ -86,6 +95,15 @@ fun decideAndroidUpdateInstall(
     if (installed.signerSha256.isEmpty() || downloaded.signerSha256.isEmpty()) {
         return AndroidInstallDecision.Refuse(
             "The signing certificate of the app could not be read. The update was not installed.",
+        )
+    }
+    val releaseSigner = normalizeAndroidUpdateSha256(expectedSignerSha256)
+        ?: return AndroidInstallDecision.Refuse(
+            "This build has no release signing certificate to verify updates against.",
+        )
+    if (downloaded.signerSha256 != setOf(releaseSigner)) {
+        return AndroidInstallDecision.Refuse(
+            "The downloaded app is not signed with the release certificate. It was not installed.",
         )
     }
     if (installed.signerSha256 != downloaded.signerSha256) {

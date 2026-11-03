@@ -299,9 +299,10 @@ class ApiClient(
 
     // --- Sessions -----------------------------------------------------------
 
-    override suspend fun sessionDetail(id: String): SessionDetail = withContext(Dispatchers.IO) {
-        sharedSessionDetail(id)
-    }
+    override suspend fun sessionDetail(id: String, meta: Boolean): SessionDetail =
+        withContext(Dispatchers.IO) {
+            sharedSessionDetail(id, meta)
+        }
 
     /**
      * The same request without the sharing window. An explicit reload must see
@@ -309,10 +310,11 @@ class ApiClient(
      * here, instead of repeating the answer another view model received two
      * seconds ago.
      */
-    suspend fun sessionDetailFresh(id: String): SessionDetail = withContext(Dispatchers.IO) {
-        invalidateSessionDetail(id)
-        fetchSessionDetail(id)
-    }
+    suspend fun sessionDetailFresh(id: String, meta: Boolean): SessionDetail =
+        withContext(Dispatchers.IO) {
+            invalidateSessionDetail(id)
+            fetchSessionDetail(id, meta)
+        }
 
     /**
      * A mutation changed what `GET /api/sessions/{id}` answers (rename,
@@ -323,21 +325,27 @@ class ApiClient(
     fun invalidateSessionDetail(id: String) {
         // Without a configured origin there is no key and nothing to forget.
         if (origin() == null) return
-        synchronized(detailLock) { detailFlights.remove(detailKey(id)) }
+        val prefix = detailKeyPrefix(id)
+        synchronized(detailLock) { detailFlights.keys.removeAll { it.startsWith(prefix) } }
     }
 
-    private fun detailKey(id: String): String {
+    private fun detailKeyPrefix(id: String): String {
         val origin = url("api/sessions/${encodePathSegment(id)}")
-        return "${origin.scheme}://${origin.host}:${origin.port}|$id"
+        return "${origin.scheme}://${origin.host}:${origin.port}|$id|"
     }
+
+    private fun detailKey(id: String, meta: Boolean): String =
+        detailKeyPrefix(id) + "meta=$meta"
 
     /**
-     * One in-flight `GET /api/sessions/{id}` per origin and id. The first
-     * caller fetches; every caller that arrives while it runs (or within
-     * [DETAIL_SHARE_WINDOW_MILLIS] after it) gets the same answer.
+     * One in-flight `GET /api/sessions/{id}` per origin, id and shape. The
+     * first caller fetches; every caller that arrives while it runs (or within
+     * [DETAIL_SHARE_WINDOW_MILLIS] after it) gets the same answer. The shape is
+     * part of the key: a metadata answer carries no transcript, so it must
+     * never satisfy a caller that needs the messages.
      */
-    private suspend fun sharedSessionDetail(id: String): SessionDetail {
-        val key = detailKey(id)
+    private suspend fun sharedSessionDetail(id: String, meta: Boolean): SessionDetail {
+        val key = detailKey(id, meta)
         val flight: DetailFlight
         val owner: Boolean
         synchronized(detailLock) {
@@ -357,7 +365,7 @@ class ApiClient(
         }
         if (!owner) return flight.result.await()
         return try {
-            val detail = fetchSessionDetail(id)
+            val detail = fetchSessionDetail(id, meta)
             flight.completedAt = System.currentTimeMillis()
             flight.result.complete(detail)
             detail
@@ -384,8 +392,18 @@ class ApiClient(
             completedAt > 0 && now - completedAt <= DETAIL_SHARE_WINDOW_MILLIS
     }
 
-    private suspend fun fetchSessionDetail(id: String): SessionDetail {
-        val body = requireSuccess(perform(get("api/sessions/${encodePathSegment(id)}")))
+    /**
+     * `GET /api/sessions/{id}` — [meta] asks for the header and the branch
+     * tree alone (`?meta=1`), which is what the chat and the details dialog
+     * need. `meta = false` answers the full body including `context.messages`;
+     * only the copy-transcript action needs the messages, and it reads them
+     * from `/context` (this full shape is the fallback for a server that knows
+     * neither). An older server ignores `meta` and answers the full body,
+     * which this decode still understands.
+     */
+    private suspend fun fetchSessionDetail(id: String, meta: Boolean): SessionDetail {
+        val suffix = if (meta) "?meta=1" else ""
+        val body = requireSuccess(perform(get("api/sessions/${encodePathSegment(id)}$suffix")))
         return decode(body) { json.decodeFromString(SessionDetail.serializer(), body) }
     }
 
@@ -680,12 +698,17 @@ class ApiClient(
      * caps a server that never answers, and cancelling the waiting coroutine
      * closes the call, so the submit's bound is a real bound.
      */
-    override suspend fun agentState(sessionId: String): JsonObject = withContext(Dispatchers.IO) {
-        val body = requireSuccess(
-            performCancellable(liveStateClient, get("api/agent/${encodePathSegment(sessionId)}")),
-        )
-        decode(body) { json.parseToJsonElement(body).jsonObject }
-    }
+    override suspend fun agentState(sessionId: String, systemPrompt: Boolean): JsonObject =
+        withContext(Dispatchers.IO) {
+            val suffix = if (systemPrompt) "" else "?systemPrompt=0"
+            val body = requireSuccess(
+                performCancellable(
+                    liveStateClient,
+                    get("api/agent/${encodePathSegment(sessionId)}$suffix"),
+                ),
+            )
+            decode(body) { json.parseToJsonElement(body).jsonObject }
+        }
 
     /**
      * `GET /api/sessions` — the ids the server runs a turn for right now
@@ -794,6 +817,48 @@ class ApiClient(
         deferThinking: Boolean,
         deferMedia: Boolean,
     ): String = withContext(Dispatchers.IO) {
+        val request = contextRequest(sessionId, leafId, includePreCompaction, deferThinking, deferMedia, etag = null)
+        requireSuccess(perform(request))
+    }
+
+    /**
+     * [contextFullRaw] with the cached answer's validator. The server answers
+     * `304` when the session file and every view option are unchanged; the
+     * caller then keeps its cached body instead of re-downloading 1–3 MB.
+     * A server without ETag support answers a normal 200.
+     */
+    override suspend fun contextFullConditional(
+        sessionId: String,
+        leafId: String?,
+        includePreCompaction: Boolean,
+        deferThinking: Boolean,
+        deferMedia: Boolean,
+        etag: String?,
+    ): ContextRawResponse = withContext(Dispatchers.IO) {
+        val request = contextRequest(sessionId, leafId, includePreCompaction, deferThinking, deferMedia, etag)
+        val response = perform(request)
+        if (response.status == 304) {
+            return@withContext ContextRawResponse(body = null, etag = response.etag)
+        }
+        if (response.status !in 200..299) {
+            throw errorFor(response.status, response.body, response.origin)
+        }
+        ContextRawResponse(body = response.body, etag = response.etag)
+    }
+
+    /**
+     * One full-context request for exactly one view. Every option that changes
+     * the body is part of the URL, so the server's ETag (session file + these
+     * options) can never validate another view's answer.
+     */
+    private fun contextRequest(
+        sessionId: String,
+        leafId: String?,
+        includePreCompaction: Boolean,
+        deferThinking: Boolean,
+        deferMedia: Boolean,
+        etag: String?,
+    ): Request {
         val query = buildList {
             if (leafId != null) add("leafId=${encodeQuery(leafId)}")
             if (includePreCompaction) add("includePreCompaction=1")
@@ -801,7 +866,12 @@ class ApiClient(
             if (deferMedia) add("deferMedia=1")
         }.joinToString("&")
         val suffix = if (query.isEmpty()) "" else "?$query"
-        requireSuccess(perform(get("api/sessions/${encodePathSegment(sessionId)}/context$suffix")))
+        val builder = get("api/sessions/${encodePathSegment(sessionId)}/context$suffix")
+        return if (etag.isNullOrEmpty()) {
+            builder
+        } else {
+            builder.newBuilder().header("If-None-Match", etag).build()
+        }
     }
 
     /** `GET .../thinking?blockIndex=` for a deferred thinking block. */
@@ -1283,13 +1353,13 @@ class ApiClient(
         exchangeOn(longRouteClient, request, limit)
 
     private suspend fun exchangeOn(http: OkHttpClient, request: Request, limit: Long): RawExchange =
+        // Stays off the caller's thread (a blocking `execute`), and the
+        // coroutine's cancellation reaches the call through
+        // `performCancellableCall`.
         withContext(Dispatchers.IO) {
-            val response = try {
-                http.newCall(request).execute()
-            } catch (error: IOException) {
-                throw ApiError.Network(error)
+            performCancellableCall(http, request) { response, _ ->
+                RawExchange(response.code, readCappedBytes(response, limit), response.header("Content-Type"))
             }
-            response.use { RawExchange(it.code, readCappedBytes(it, limit), it.header("Content-Type")) }
         }
 
     /**
@@ -1414,15 +1484,41 @@ class ApiClient(
      * caller at once instead of at the next socket timeout. [http] carries
      * the per-call bound (`callTimeout`).
      */
-    private suspend fun performCancellable(http: OkHttpClient, request: Request): RawResponse =
-        suspendCancellableCoroutine { continuation ->
-            val call = http.newCall(request)
-            continuation.invokeOnCancellation { call.cancel() }
-            val outcome = runCatching { execute(call, request) }
-            // A cancelled continuation ignores the result; the call is closed
-            // by the hook above and `execute` returns right away.
-            if (continuation.isActive) continuation.resumeWith(outcome)
+    private suspend fun performCancellable(
+        http: OkHttpClient,
+        request: Request,
+        limit: Long = MAX_BODY_BYTES,
+    ): RawResponse = performCancellableCall(http, request) { response, origin ->
+        RawResponse(response.code, readCappedBytes(response, limit).toString(Charsets.UTF_8), origin, response.header("ETag"))
+    }
+
+    /**
+     * One cancellable request→response round trip with a caller-provided
+     * mapping (the usage route needs the raw bytes for its cap). Cancelling
+     * the waiting coroutine closes the call, so `SettingsViewModel` dropping a
+     * superseded usage scan really stops it on the wire instead of leaving the
+     * server to finish a scan nobody wants.
+     */
+    private suspend fun <T> performCancellableCall(
+        http: OkHttpClient,
+        request: Request,
+        map: (Response, ServerAddress) -> T,
+    ): T = suspendCancellableCoroutine { continuation ->
+        val call = http.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        val outcome = runCatching {
+            val response = try {
+                call.execute()
+            } catch (error: IOException) {
+                throw ApiError.Network(error)
+            }
+            val origin = request.url.let { ServerAddress(it.scheme, it.host, it.port) }
+            response.use { map(it, origin) }
         }
+        // A cancelled continuation ignores the result; the call is closed
+        // by the hook above and `execute` returns right away.
+        if (continuation.isActive) continuation.resumeWith(outcome)
+    }
 
     /** One bounded request→response round trip; an IOException becomes [ApiError.Network]. */
     private fun execute(call: Call, request: Request): RawResponse {

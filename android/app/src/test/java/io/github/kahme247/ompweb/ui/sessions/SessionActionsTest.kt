@@ -33,6 +33,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -88,6 +89,9 @@ class SessionActionsTest {
     /** When set, PATCH /api/sessions/s1 answers with this instead of 200. */
     @Volatile private var renameResponse: MockResponse? = null
 
+    /** True: an older server ignores `?meta=1` and always answers the full body. */
+    @Volatile private var ignoresMeta = false
+
     @Before
     fun setUp() {
         server = MockWebServer()
@@ -113,7 +117,9 @@ class SessionActionsTest {
                             renameResponse ?: json(200, """{"ok":true}""")
                         }
                         "DELETE" -> json(200, """{"ok":true}""")
-                        else -> json(200, detailBody)
+                        // Like the server: `?meta=1` answers the header/tree
+                        // shape and omits `context` entirely.
+                        else -> json(200, detailAnswer(request))
                     }
                     path == "/api/projects" -> when (request.method) {
                         "POST" -> json(200, """{"project":{"path":"/work/new"}}""")
@@ -207,8 +213,10 @@ class SessionActionsTest {
     }
 
     @Test
-    fun `copy transcript renders the detail messages as markdown`() {
+    fun `copy transcript renders the full transcript of a meta-aware server`() {
         sessionList = """{"sessions":[{"id":"s1","name":"Fix the drawer","cwd":"/work/x"}],"runningSessionIds":[]}"""
+        // The real server omits `context` for `?meta=1`; a copy built from that
+        // answer used to be a heading and a cwd with no messages in it.
         detailBody = """
             {"sessionId":"s1","info":{"id":"s1","name":"Fix the drawer","cwd":"/work/x","messageCount":2},
              "context":{"messages":[
@@ -229,6 +237,75 @@ class SessionActionsTest {
         assertTrue(
             "the assistant text survives: $markdown",
             markdown.contains("Because the list filled the column."),
+        )
+        val copyRequest = requests("GET", "/api/sessions/s1").last()
+        assertNull("the copy asks for the full body, not the metadata shape", copyRequest.requestUrl?.queryParameter("meta"))
+    }
+
+    @Test
+    fun `the details dialog reads the model and thinking level from the meta info`() {
+        sessionList = """{"sessions":[{"id":"s1","cwd":"/work/x"}],"runningSessionIds":[]}"""
+        // C1': the metadata answer carries the session file's choices in `info`
+        // and no `context` at all.
+        detailBody = """
+            {"sessionId":"s1","info":{"id":"s1","cwd":"/work/x","messageCount":4,
+              "model":{"provider":"anthropic","modelId":"claude-sonnet-4"},
+              "thinkingLevel":"high"}}
+        """.trimIndent()
+        viewModel.refresh()
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+
+        waitFor("detail open") { viewModel.state.value.detail != null }
+        val detail = requireNotNull(viewModel.state.value.detail)
+        assertEquals("anthropic/claude-sonnet-4", detail.model)
+        assertEquals("high", detail.thinkingLevel)
+    }
+
+    @Test
+    fun `an older server reports the model and thinking level under context`() {
+        sessionList = """{"sessions":[{"id":"s1","cwd":"/work/x"}],"runningSessionIds":[]}"""
+        // A server that ignores `meta` answers the full body; `info` has no
+        // model, so the dialog keeps reading `context` like before.
+        ignoresMeta = true
+        detailBody = """
+            {"sessionId":"s1","info":{"id":"s1","cwd":"/work/x","messageCount":2},
+             "context":{"thinkingLevel":"low","model":{"provider":"openai","modelId":"gpt-5"},
+                        "messages":[]}}
+        """.trimIndent()
+        viewModel.refresh()
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+
+        waitFor("detail open") { viewModel.state.value.detail != null }
+        val detail = requireNotNull(viewModel.state.value.detail)
+        assertEquals("openai/gpt-5", detail.model)
+        assertEquals("low", detail.thinkingLevel)
+    }
+
+    @Test
+    fun `the details dialog shows the server's newest message time`() {
+        sessionList = """{"sessions":[{"id":"s1","cwd":"/work/x"}],"runningSessionIds":[]}"""
+        // `modified` is the file's mtime (bumped by a resume); the meta `info`
+        // now carries `lastMessageAt` too, on the same terms as the list.
+        detailBody = """
+            {"sessionId":"s1","info":{"id":"s1","cwd":"/work/x","created":"2026-10-01T08:00:00.000Z",
+              "modified":"2026-11-03T09:00:00.000Z","lastMessageAt":"2026-10-02T10:30:00.000Z",
+              "messageCount":4}}
+        """.trimIndent()
+        viewModel.refresh()
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+
+        waitFor("detail open") { viewModel.state.value.detail != null }
+        val info = requireNotNull(viewModel.state.value.detail).info
+        assertEquals(
+            "the newest message comes from the meta info",
+            "2026-10-02T10:30:00.000Z",
+            info.lastMessageAt,
         )
     }
 
@@ -414,6 +491,13 @@ class SessionActionsTest {
         } finally {
             archiveServer.shutdown()
         }
+    }
+
+    /** The server's two shapes: with `meta=1` no `context`, otherwise the full body. */
+    private fun detailAnswer(request: RecordedRequest): String {
+        val body = json.parseToJsonElement(detailBody).jsonObject
+        val meta = !ignoresMeta && request.requestUrl?.queryParameter("meta") == "1"
+        return (if (meta) JsonObject(body - "context") else body).toString()
     }
 
     private fun applyProjectPatch(body: String) {

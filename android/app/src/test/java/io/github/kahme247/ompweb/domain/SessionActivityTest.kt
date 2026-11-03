@@ -81,6 +81,33 @@ class SessionActivityTest {
     }
 
     @Test
+    fun `the server lastMessageAt wins over an older local memo`() {
+        // The chat was opened here yesterday; another client wrote a message
+        // today, so the server's newest message is the truth for the row.
+        val server = session("s1", "2026-03-10T13:00:00Z")
+            .copy(lastMessageAt = "2026-03-10T12:00:00Z")
+
+        val projected = listOf(server).withKnownActivity(
+            mapOf("s1" to Instant.parse("2026-03-09T00:00:00Z").toEpochMilli()),
+        )
+
+        assertEquals("2026-03-10T12:00:00.000Z", projected.single().modified)
+    }
+
+    @Test
+    fun `a newer local memo is still the display time`() {
+        // A live message this device just saw may not be in the list's scan
+        // yet; the display takes the later of both.
+        val server = session("s1", "2026-03-10T13:00:00Z")
+            .copy(lastMessageAt = "2026-03-10T12:00:00Z")
+        val memo = Instant.parse("2026-03-10T15:00:00Z").toEpochMilli()
+
+        val projected = listOf(server).withKnownActivity(mapOf("s1" to memo))
+
+        assertEquals(sessionTimestampOf(memo), projected.single().modified)
+    }
+
+    @Test
     fun `an empty map keeps the list as it is`() {
         val sessions = listOf(session("a", "2026-03-10T11:59:00Z"))
 

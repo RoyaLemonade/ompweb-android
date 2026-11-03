@@ -25,6 +25,13 @@ interface SessionListCache {
 }
 
 /**
+ * One cached transcript: the body exactly as the server sent it, plus the
+ * `ETag` of that answer. The validator is what makes the next open a
+ * conditional request (`If-None-Match`) instead of a full re-download.
+ */
+data class CachedTranscript(val body: String, val etag: String?)
+
+/**
  * The chat's cache seam (`ChatViewModel`): the whole context response of the
  * last opened sessions, keyed by the view they were fetched for (`leafId` and
  * the compaction setting). A cached page is only ever used for exactly that
@@ -32,9 +39,16 @@ interface SessionListCache {
  */
 interface TranscriptCache {
 
-    fun read(origin: String, sessionId: String, leafId: String?, includePreCompaction: Boolean): String?
+    fun read(origin: String, sessionId: String, leafId: String?, includePreCompaction: Boolean): CachedTranscript?
 
-    fun write(origin: String, sessionId: String, leafId: String?, includePreCompaction: Boolean, body: String)
+    fun write(
+        origin: String,
+        sessionId: String,
+        leafId: String?,
+        includePreCompaction: Boolean,
+        body: String,
+        etag: String? = null,
+    )
 }
 
 /**
@@ -110,7 +124,7 @@ class SessionCacheStore(
         sessionId: String,
         leafId: String?,
         includePreCompaction: Boolean,
-    ): String? = synchronized(lock) {
+    ): CachedTranscript? = synchronized(lock) {
         val dir = originDir(origin)
         val index = readIndex(dir) ?: return null
         val key = keyOf(sessionId)
@@ -125,7 +139,9 @@ class SessionCacheStore(
             return null
         }
         writeIndex(dir, index.copy(entries = index.entries.map { if (it.key == key) it.copy(lastUsedAt = clock()) else it }))
-        body
+        // An entry written before the server learned to send validators has
+        // none: it still seeds, it just cannot revalidate.
+        CachedTranscript(body = body, etag = entry.etag)
     }
 
     override fun write(
@@ -134,6 +150,7 @@ class SessionCacheStore(
         leafId: String?,
         includePreCompaction: Boolean,
         body: String,
+        etag: String?,
     ) = synchronized(lock) {
         val dir = originDir(origin)
         val key = keyOf(sessionId)
@@ -156,6 +173,7 @@ class SessionCacheStore(
             lastUsedAt = now,
             leafId = leafId,
             includePreCompaction = includePreCompaction,
+            etag = etag,
         )
         val kept = (previous.entries.filterNot { it.key == key } + entry).let(::evict)
         val keptKeys = kept.mapTo(HashSet()) { it.key }
@@ -307,6 +325,8 @@ class SessionCacheStore(
         val lastUsedAt: Long = 0,
         val leafId: String? = null,
         val includePreCompaction: Boolean = false,
+        /** `ETag` of the answer this body came from; null on a pre-ETag entry. */
+        val etag: String? = null,
     )
 
     companion object {

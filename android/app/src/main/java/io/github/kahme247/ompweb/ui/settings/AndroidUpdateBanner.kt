@@ -41,6 +41,7 @@ fun AndroidUpdateBanner(
     onInstall: (AndroidUpdateNotice) -> Unit,
     onOpenInstallSettings: () -> Unit,
     onConfirmInstall: () -> Unit,
+    onConfirmMetered: () -> Unit,
     onCancelInstall: () -> Unit,
     onOpenRelease: (AndroidUpdateNotice) -> Unit,
     onDismiss: (AndroidUpdateNotice) -> Unit,
@@ -84,6 +85,7 @@ fun AndroidUpdateBanner(
                             onInstall = onInstall,
                             onOpenInstallSettings = onOpenInstallSettings,
                             onConfirmInstall = onConfirmInstall,
+                            onConfirmMetered = onConfirmMetered,
                             onCancelInstall = onCancelInstall,
                             onOpenRelease = onOpenRelease,
                             onDismiss = onDismiss,
@@ -110,6 +112,7 @@ fun AndroidUpdateBanner(
                         onInstall = onInstall,
                         onOpenInstallSettings = onOpenInstallSettings,
                         onConfirmInstall = onConfirmInstall,
+                        onConfirmMetered = onConfirmMetered,
                         onCancelInstall = onCancelInstall,
                         onOpenRelease = onOpenRelease,
                         onDismiss = onDismiss,
@@ -129,6 +132,7 @@ private fun AndroidUpdateActions(
     onInstall: (AndroidUpdateNotice) -> Unit,
     onOpenInstallSettings: () -> Unit,
     onConfirmInstall: () -> Unit,
+    onConfirmMetered: () -> Unit,
     onCancelInstall: () -> Unit,
     onOpenRelease: (AndroidUpdateNotice) -> Unit,
     onDismiss: (AndroidUpdateNotice) -> Unit,
@@ -142,6 +146,14 @@ private fun AndroidUpdateActions(
         install == AndroidUpdateInstallState.AwaitingConfirmation -> {
             TextButton(onClick = onConfirmInstall) {
                 Text(stringResource(R.string.android_update_banner_confirm))
+            }
+        }
+        install is AndroidUpdateInstallState.ConfirmMetered -> {
+            TextButton(onClick = onConfirmMetered) {
+                Text(stringResource(R.string.android_update_banner_metered_confirm))
+            }
+            TextButton(onClick = onCancelInstall) {
+                Text(stringResource(R.string.android_update_banner_cancel))
             }
         }
         // The APK is on its way to Android; "Install" would do nothing.
@@ -219,6 +231,8 @@ internal fun AndroidUpdateInstallStatusText(
             stringResource(R.string.android_update_banner_confirming)
         AndroidUpdateInstallState.NeedsPermission ->
             stringResource(R.string.android_update_banner_permission)
+        is AndroidUpdateInstallState.ConfirmMetered ->
+            stringResource(R.string.android_update_banner_metered, meteredMegabytes(install.sizeBytes))
         is AndroidUpdateInstallState.Failed -> install.message
     } ?: return
     Text(
@@ -231,6 +245,12 @@ internal fun AndroidUpdateInstallStatusText(
         },
         modifier = modifier.semantics { liveRegion = LiveRegionMode.Polite },
     )
+}
+
+/** Announced size for the metered confirmation, one decimal (`6.0`, `0.6`). */
+private fun meteredMegabytes(bytes: Long): String {
+    val megabytes = (bytes.coerceAtLeast(0) / (1024.0 * 1024.0))
+    return String.format(java.util.Locale.getDefault(), "%.1f", megabytes)
 }
 
 private val NARROW_ANDROID_BANNER_MAX_WIDTH = 480.dp

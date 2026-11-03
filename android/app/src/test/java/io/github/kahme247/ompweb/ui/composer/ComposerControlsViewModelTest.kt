@@ -5,8 +5,11 @@ import io.github.kahme247.ompweb.net.ApiError
 import io.github.kahme247.ompweb.net.ComposerControlsApi
 import io.github.kahme247.ompweb.net.ElsewhereSession
 import io.github.kahme247.ompweb.net.ModelsResponse
+import io.github.kahme247.ompweb.net.ServerAddress
+import io.github.kahme247.ompweb.net.ServerAddressResult
 import io.github.kahme247.ompweb.testutil.FakeChatSettings
 import io.github.kahme247.ompweb.ui.composer.controls.ComposerControlsViewModel
+import io.github.kahme247.ompweb.ui.composer.controls.ModelCatalogCache
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -33,13 +36,21 @@ class ComposerControlsViewModelTest {
 
     private class Recorded(val sessionId: String, val command: JsonObject, val advisor: Boolean)
 
+    private fun origin(raw: String): ServerAddress =
+        (ServerAddress.parse(raw) as ServerAddressResult.Valid).address
+
     private class FakeApi : ComposerControlsApi {
         val commands = mutableListOf<Recorded>()
         var running = false
 
-        override suspend fun models(cwd: String?): ModelsResponse = ModelsResponse()
+        var modelCalls = 0
 
-        override suspend fun agentState(sessionId: String): JsonObject = buildJsonObject {
+        override suspend fun models(cwd: String?): ModelsResponse {
+            modelCalls++
+            return ModelsResponse()
+        }
+
+        override suspend fun agentState(sessionId: String, systemPrompt: Boolean): JsonObject = buildJsonObject {
             put("running", running)
         }
 
@@ -52,6 +63,44 @@ class ComposerControlsViewModelTest {
             commands += Recorded(sessionId, command, advisor)
             return null
         }
+    }
+
+    @Test
+    fun `the model catalog is fetched once per process, origin and cwd`() = runTest {
+        val api = FakeApi()
+        val settings = FakeChatSettings()
+        val cache = ModelCatalogCache()
+        val controls = ComposerControlsViewModel(api, settings, this, cache)
+        settings.setOrigin(origin("http://127.0.0.1:30177"))
+        advanceUntilIdle()
+
+        controls.bind("s1", "/repo")
+        advanceUntilIdle()
+        controls.bind("s2", "/repo")
+        advanceUntilIdle()
+        assertEquals("a chat switch reuses the catalog", 1, api.modelCalls)
+
+        controls.bind("s3", "/other")
+        advanceUntilIdle()
+        assertEquals("another cwd is another catalog", 2, api.modelCalls)
+
+        // The same cwd on another server is a different catalog: its providers
+        // and models are the new installation's, not the old one's.
+        settings.setOrigin(origin("http://127.0.0.1:30178"))
+        controls.bind("s4", "/repo")
+        advanceUntilIdle()
+        assertEquals("a server switch refetches the catalog", 3, api.modelCalls)
+
+        // Back on the first server the fresh entry still answers.
+        settings.setOrigin(origin("http://127.0.0.1:30177"))
+        controls.bind("s5", "/repo")
+        advanceUntilIdle()
+        assertEquals("the first server's entry is still cached", 3, api.modelCalls)
+
+        cache.invalidate()
+        controls.bind("s6", "/repo")
+        advanceUntilIdle()
+        assertEquals("an explicit model-config change refetches", 4, api.modelCalls)
     }
 
     @Test
@@ -298,7 +347,7 @@ class ComposerControlsViewModelTest {
         val api = object : ComposerControlsApi {
             override suspend fun models(cwd: String?): ModelsResponse = ModelsResponse()
 
-            override suspend fun agentState(sessionId: String): JsonObject = buildJsonObject { }
+            override suspend fun agentState(sessionId: String, systemPrompt: Boolean): JsonObject = buildJsonObject { }
 
             override suspend fun agentCommand(
                 sessionId: String,

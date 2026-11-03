@@ -31,8 +31,8 @@ val updateReleasesRepo = "RoyaLemonade/ompweb-android"
 // increasing integer, never reused, so every release installs over the
 // previous one. The update server's latest.json sidecar is generated from
 // these two values by writeReleaseSidecar.
-val ompWebVersionName = "1.0.33"
-val ompWebVersionCode = 10033
+val ompWebVersionName = "1.0.34"
+val ompWebVersionCode = 10034
 
 android {
     namespace = "io.github.kahme247.ompweb"
@@ -46,6 +46,15 @@ android {
         versionCode = ompWebVersionCode
         versionName = ompWebVersionName
         buildConfigField("String", "UPDATE_RELEASES_REPO", "\"$updateReleasesRepo\"")
+        // SHA-256 of the release signing certificate. The updater only installs
+        // an APK signed with exactly this certificate (plus the installed-signer
+        // check Android itself applies), so a forged feed or an APK from another
+        // key can never replace the app. Debug builds cannot install at all.
+        buildConfigField(
+            "String",
+            "RELEASE_SIGNING_SHA256",
+            "\"d73354b52dc7c3f0c74623c439ddb7b52e252811c6e6b5f851c9d04b7015fc87\"",
+        )
     }
 
     buildTypes {

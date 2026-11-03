@@ -724,10 +724,20 @@ const val PRESENCE_TTL_MILLIS = 60_000L
 const val PRESENCE_KEEPALIVE_MILLIS = 45_000L
 
 /**
- * A report that failed is retried this early: one lost report must not let the
- * entry expire before the next regular beat.
+ * Room a report needs for its round trip: the retry plus this slack must land
+ * before the entry expires, or the device is unreachable for
+ * `routeNotification` until the next successful report.
  */
-const val PRESENCE_RETRY_MILLIS = 30_000L
+private const val PRESENCE_RETRY_SLACK_MILLIS = 5_000L
+
+/**
+ * A report that failed is retried this early, derived from the server's TTL:
+ * `TTL - beat` is the margin left after a regular report, so the retry gets
+ * that margin minus a round-trip slack. One lost report therefore cannot let
+ * the entry expire before the next attempt (the old fixed 30 s retry after the
+ * 45 s beat landed at T+75 s, 15 s past the TTL).
+ */
+const val PRESENCE_RETRY_MILLIS = PRESENCE_TTL_MILLIS - PRESENCE_KEEPALIVE_MILLIS - PRESENCE_RETRY_SLACK_MILLIS
 
 /** Distance to the next presence report: the regular beat, or the retry after a failure. */
 fun nextPresenceDelayMillis(delivered: Boolean): Long =

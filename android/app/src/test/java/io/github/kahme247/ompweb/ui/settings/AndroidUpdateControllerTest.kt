@@ -73,6 +73,8 @@ class AndroidUpdateControllerTest {
         installer: AndroidApkInstaller? = null,
         installStatus: Flow<AndroidInstallSessionStatus> = emptyFlow(),
         clock: () -> Long = { now },
+        installAllowed: Boolean = true,
+        metered: () -> Boolean = { false },
     ) = AndroidUpdateController(
         source = source,
         settings = prefs,
@@ -85,7 +87,67 @@ class AndroidUpdateControllerTest {
         installer = installer,
         installStatus = installStatus,
         now = clock,
+        // The release certificate this build pins; every fake APK uses it.
+        expectedSignerSha256 = installedSigner,
+        installAllowed = installAllowed,
+        metered = metered,
     )
+
+    @Test
+    fun `a metered network asks before downloading the APK`() = runTest(UnconfinedTestDispatcher()) {
+        val prefs = FakePrefs()
+        val file = File.createTempFile("ompweb-update", ".apk")
+        val downloader = FakeDownloader(file)
+        var metered = true
+        val controller = controller(
+            backgroundScope,
+            prefs,
+            FakeSource(candidate()),
+            downloader = downloader,
+            inspector = FakeInspector(installedIdentity = { identity(versionCode = 10000) }, downloadedIdentity = { identity() }),
+            installer = FakeInstaller(),
+            metered = { metered },
+        )
+        controller.check()
+        controller.install()
+
+        val asking = controller.state.value.install as AndroidUpdateInstallState.ConfirmMetered
+        assertEquals("the announced size is named", 64L, asking.sizeBytes)
+        assertEquals("nothing was downloaded yet", 0, downloader.calls)
+
+        // Cancelling the confirmation leaves the update uninstalled.
+        controller.cancelInstall()
+        assertEquals(AndroidUpdateInstallState.Idle, controller.state.value.install)
+        assertEquals(0, downloader.calls)
+
+        // The explicit yes downloads exactly once.
+        metered = true
+        controller.install()
+        controller.confirmMeteredDownload()
+        awaitInstall { downloader.calls == 1 && controller.state.value.install == AndroidUpdateInstallState.Installing }
+        file.delete()
+    }
+
+    @Test
+    fun `a debug build cannot install updates`() = runTest(UnconfinedTestDispatcher()) {
+        val downloader = FakeDownloader(File.createTempFile("ompweb-update", ".apk"))
+        val controller = controller(
+            backgroundScope,
+            FakePrefs(),
+            FakeSource(candidate()),
+            downloader = downloader,
+            inspector = FakeInspector(installedIdentity = { identity(versionCode = 10000) }, downloadedIdentity = { identity() }),
+            installer = FakeInstaller(),
+            installAllowed = false,
+        )
+        controller.check()
+
+        controller.install()
+
+        val state = controller.state.value.install as AndroidUpdateInstallState.Failed
+        assertTrue(state.message.contains("cannot install"))
+        assertEquals("nothing was downloaded", 0, downloader.calls)
+    }
 
     @Test
     fun `a fresh cache answers from disk without a request`() = runTest(UnconfinedTestDispatcher()) {
@@ -150,7 +212,7 @@ class AndroidUpdateControllerTest {
         }
 
     @Test
-    fun `a return to the foreground rechecks once the answer is thirty minutes old`() =
+    fun `a return to the foreground reuses the six-hour answer`() =
         runTest(UnconfinedTestDispatcher()) {
             val prefs = FakePrefs()
             val source = FakeSource(candidate("1.0.1", 10001))
@@ -166,12 +228,10 @@ class AndroidUpdateControllerTest {
             clock = now + ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS - 1
             controller.checkOnForeground()
             controller.checkOnForeground()
-            assertEquals(1, source.calls.size)
+            assertEquals("app switching costs no request", 1, source.calls.size)
 
-            // Past it the next return asks the source again, even though the
-            // six-hour cache would still answer.
+            // Past it the next return asks the source again.
             clock = now + ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS + 1
-            assertTrue(clock < now + ANDROID_UPDATE_CACHE_MILLIS)
             controller.checkOnForeground()
             assertEquals(2, source.calls.size)
             assertEquals(clock, prefs.value.cache?.checkedAtMillis)
@@ -180,6 +240,25 @@ class AndroidUpdateControllerTest {
             clock += ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS - 1
             controller.checkOnForeground()
             assertEquals(2, source.calls.size)
+        }
+
+    @Test
+    fun `the manual check forces the source inside the foreground window`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val prefs = FakePrefs()
+            val source = FakeSource(candidate("1.0.1", 10001))
+            var clock = now
+            val controller = controller(backgroundScope, prefs, source, clock = { clock })
+
+            controller.check()
+            assertEquals(1, source.calls.size)
+
+            clock = now + 60_000L
+            controller.checkOnForeground()
+            assertEquals("a return inside the window is free", 1, source.calls.size)
+
+            controller.check(force = true)
+            assertEquals("the settings button always asks", 2, source.calls.size)
         }
 
     @Test
@@ -584,7 +663,10 @@ class AndroidUpdateControllerTest {
             controller.state.value.install is AndroidUpdateInstallState.Failed && !file.exists()
         }
         val state = controller.state.value.install as AndroidUpdateInstallState.Failed
-        assertTrue(state.message.contains("different key"))
+        assertTrue(
+            "the pinned release certificate is checked first: ${state.message}",
+            state.message.contains("release certificate") || state.message.contains("different key"),
+        )
         assertTrue(installer.installed.isEmpty())
         assertFalse(file.exists())
     }
@@ -640,6 +722,70 @@ class AndroidUpdateControllerTest {
             awaitInstall { installer.installed.isNotEmpty() }
             assertEquals(1, downloader.calls)
             assertEquals(listOf(file), installer.installed)
+        }
+
+    @Test
+    fun `the metered confirmation survives the install permission detour`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val prefs = FakePrefs()
+            val file = File.createTempFile("ompweb-update", ".apk").apply { deleteOnExit() }
+            val downloader = FakeDownloader(file)
+            val installer = FakeInstaller(canInstallPackages = false)
+            val controller = controller(
+                backgroundScope,
+                prefs,
+                FakeSource(candidate()),
+                downloader = downloader,
+                inspector = FakeInspector(installedIdentity = { identity(versionCode = 10000) }, downloadedIdentity = { identity() }),
+                installer = installer,
+                metered = { true },
+            )
+            controller.check()
+
+            // Install on mobile data: the user says yes, then Android asks for
+            // "unknown apps" — the yes must not be burnt by that detour.
+            controller.install()
+            controller.confirmMeteredDownload()
+            assertEquals(AndroidUpdateInstallState.NeedsPermission, controller.state.value.install)
+            assertEquals("nothing downloaded before the permission", 0, downloader.calls)
+
+            installer.canInstallPackages = true
+            controller.resumeInstallAfterPermission()
+
+            awaitInstall { installer.installed.isNotEmpty() }
+            assertEquals("the user confirms mobile data once, not twice", 1, downloader.calls)
+            assertEquals(listOf(file), installer.installed)
+        }
+
+    @Test
+    fun `cancelling the metered question forgets the confirmation`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val prefs = FakePrefs()
+            val downloader = FakeDownloader(File.createTempFile("ompweb-update", ".apk"))
+            val controller = controller(
+                backgroundScope,
+                prefs,
+                FakeSource(candidate()),
+                downloader = downloader,
+                inspector = FakeInspector(installedIdentity = { identity(versionCode = 10000) }, downloadedIdentity = { identity() }),
+                installer = FakeInstaller(),
+                metered = { true },
+            )
+            controller.check()
+
+            controller.install()
+            assertTrue(controller.state.value.install is AndroidUpdateInstallState.ConfirmMetered)
+            controller.cancelInstall()
+            assertEquals(AndroidUpdateInstallState.Idle, controller.state.value.install)
+            assertEquals("nothing was downloaded", 0, downloader.calls)
+
+            // A later attempt asks again instead of treating the cancel as yes.
+            controller.install()
+            assertTrue(
+                "the next attempt asks for the mobile-data yes again",
+                controller.state.value.install is AndroidUpdateInstallState.ConfirmMetered,
+            )
+            assertEquals(0, downloader.calls)
         }
 
     @Test

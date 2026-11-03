@@ -2,6 +2,7 @@ package io.github.kahme247.ompweb.data
 
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -92,6 +93,35 @@ class SessionActivityStoreTest {
 
         assertTrue(store.known.value.isEmpty())
         assertFalse(file.exists())
+    }
+
+    @Test
+    fun aClearDuringTheInitialReadDoesNotResurrectTheForgottenIds() = runTest(UnconfinedTestDispatcher()) {
+        // The file already holds an entry, and the initial read is in flight
+        // while `clear()` runs (a logout/401 that races the first load). The
+        // read's answer is older than the clear and must be dropped — it used
+        // to be merged back, so the next `record` wrote the forgotten ids to
+        // disk again.
+        file.writeText("""{"sessions":{"old":1000}}""")
+        // Both dispatchers share one scheduler, so `advanceUntilIdle` alone
+        // decides the interleaving: the read is queued (and holds the load
+        // mutex) when `clear()` runs, never a sleeping test thread.
+        val io = StandardTestDispatcher(testScheduler)
+        val store = SessionActivityStore(file, this, io)
+
+        store.clear()
+        advanceUntilIdle()
+
+        assertTrue("the forgotten entry stays forgotten", store.known.value.isEmpty())
+        assertFalse("the clear owns the file", file.exists())
+
+        store.record("fresh", 5_000)
+        advanceUntilIdle()
+        assertEquals(setOf("fresh"), store.known.value.keys)
+        assertTrue("the new entry is written", file.isFile)
+        val written = file.readText()
+        assertTrue("the record is persisted: $written", written.contains("fresh"))
+        assertFalse("a later record does not write the cleared ids back", written.contains("old"))
     }
 
     @Test

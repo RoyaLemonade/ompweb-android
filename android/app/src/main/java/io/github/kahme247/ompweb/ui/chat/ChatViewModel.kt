@@ -26,6 +26,7 @@ import io.github.kahme247.ompweb.chat.TranscriptPlan
 import io.github.kahme247.ompweb.chat.TranscriptRow
 import io.github.kahme247.ompweb.chat.NoticeKind
 import io.github.kahme247.ompweb.data.ChatSettings
+import io.github.kahme247.ompweb.data.CachedTranscript
 import io.github.kahme247.ompweb.data.ComposerDraftStore
 import io.github.kahme247.ompweb.data.DraftRecovery
 import io.github.kahme247.ompweb.data.expandTemplateCommand
@@ -760,7 +761,9 @@ class ChatViewModel(
         _ui.update { it.copy(systemPrompt = SystemPromptState.Loading) }
         viewModelScope.launch {
             try {
-                val root = api.agentState(sid)
+                // The panel is the one caller that needs the prompt: every
+                // other read leaves it out (`?systemPrompt=0`).
+                val root = api.agentState(sid, systemPrompt = true)
                 if (sessionId != sid) return@launch resetStaleSystemPrompt()
                 _ui.update { it.copy(systemPrompt = systemPromptFor(root)) }
             } catch (cancelled: CancellationException) {
@@ -999,10 +1002,14 @@ class ChatViewModel(
         viewModelScope.launch {
             try {
                 val data = api.goal(sid, "create", objective)
+                // The reply belongs to [sid]: a chat switch while the RPC was
+                // on the wire must not paint its goal into the new session.
+                if (sessionId != sid) return@launch
                 engine.applyGoalResponse(data)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                if (sessionId != sid) return@launch
                 if (isUnknownGoalCommand(error)) {
                     engine.notify(NoticeKind.Warning, composerStrings.goalUnsupported)
                     val fallback = ComposerSubmission(
@@ -1041,10 +1048,14 @@ class ChatViewModel(
         viewModelScope.launch {
             try {
                 val data = api.goal(sid, op)
+                // A pause/resume/drop answered after the user switched chats
+                // belongs to the old session: never write it into the new one.
+                if (sessionId != sid) return@launch
                 engine.applyGoalResponse(data)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                if (sessionId != sid) return@launch
                 if (isUnknownGoalCommand(error)) {
                     engine.notify(NoticeKind.Warning, composerStrings.goalControlsUnsupported)
                 } else if (!reportForeignCommand(error)) {
@@ -2661,10 +2672,10 @@ class ChatViewModel(
      * re-read the session file per page and delay first paint on large files.
      *
      * Cache-first: the last response for exactly this view (session, leaf,
-     * compaction setting) is painted while the request is on the wire, and the
-     * response replaces it and refreshes the cache. Nothing is seeded when the
-     * engine already holds content, so a live frame or a page that arrived
-     * first always wins.
+     * compaction setting) is painted while the request is on the wire, and its
+     * `ETag` goes out as `If-None-Match` — an unchanged view answers `304` and
+     * the cached body is the answer. Nothing is seeded when the engine already
+     * holds content, so a live frame or a page that arrived first always wins.
      */
     private suspend fun loadFullHistory(sid: String, generation: Int) {
         val request = HistoryView(
@@ -2674,8 +2685,10 @@ class ChatViewModel(
             leafId = viewLeafId,
             includePreCompaction = engine.state.value.includePreCompaction,
         )
-        seedCachedHistory(sid, request, generation)
-        val response = loadFullContext(sid, request)
+        // One disk read supplies both the first paint and the validator.
+        val cached = cachedHistory(sid, request, generation)
+        seedCachedHistory(sid, request, generation, cached)
+        val response = loadFullContext(sid, request, cached)
         val page = ContextSync.parse(response.root)
         if (generation != historyGeneration || sessionId != sid) return
         if (request.origin != settings.snapshot.value.origin?.origin) return
@@ -2691,7 +2704,7 @@ class ChatViewModel(
         // Later appends page from the delivered tail (live events, agent_end).
         historyCursor = HistoryCursor(page.entryIds.firstOrNull(), page.entryIds.lastOrNull())
         engine.applyContextPage(loaded)
-        storeCachedHistory(sid, request, response.body, page)
+        storeCachedHistory(sid, request, response.body, response.etag, page, cached)
     }
 
     /**
@@ -2705,8 +2718,33 @@ class ChatViewModel(
         val includePreCompaction: Boolean,
     )
 
-    /** One `GET .../context` answer: the body as sent, plus the parsed root. */
-    private data class HistoryResponse(val body: String?, val root: JsonObject)
+    /**
+     * One `GET .../context` answer: the body (null when the 404 fallback
+     * answered for a not-yet-written session), its validator, and the parsed
+     * root. A `304` never reaches here as such: the caller's cached body is
+     * already substituted.
+     */
+    private data class HistoryResponse(val body: String?, val etag: String?, val root: JsonObject)
+
+    /**
+     * The cached transcript of exactly [view], or null. Also the validator
+     * source for the conditional request; the caller's origin is checked
+     * against the current one before either use.
+     */
+    private suspend fun cachedHistory(
+        sid: String,
+        view: HistoryView,
+        generation: Int,
+    ): CachedTranscript? {
+        val cache = transcripts ?: return null
+        val origin = view.origin ?: return null
+        val cached = withContext(cacheDispatcher) {
+            cache.read(origin, sid, view.leafId, view.includePreCompaction)
+        } ?: return null
+        if (generation != historyGeneration || sessionId != sid) return null
+        if (settings.snapshot.value.origin?.origin != origin) return null
+        return cached
+    }
 
     /**
      * Paints the cached transcript of [view] before the request leaves. Only
@@ -2714,14 +2752,16 @@ class ChatViewModel(
      * cached live snapshot (stream cursor, running tools) is stale by
      * definition and must never be replayed.
      */
-    private suspend fun seedCachedHistory(sid: String, view: HistoryView, generation: Int) {
-        val cache = transcripts ?: return
-        val origin = view.origin ?: return
-        val body = withContext(cacheDispatcher) {
-            cache.read(origin, sid, view.leafId, view.includePreCompaction)
-        } ?: return
+    private suspend fun seedCachedHistory(
+        sid: String,
+        view: HistoryView,
+        generation: Int,
+        cached: CachedTranscript?,
+    ) {
+        val body = cached?.body ?: return
+        // The checks in `cachedHistory` already passed; keep them here too, so
+        // a future caller cannot seed a stale view.
         if (generation != historyGeneration || sessionId != sid) return
-        if (settings.snapshot.value.origin?.origin != origin) return
         val page = runCatching {
             ContextSync.parse(Json.parseToJsonElement(body).jsonObject)
         }.getOrNull() ?: return
@@ -2739,22 +2779,29 @@ class ChatViewModel(
         )
     }
 
-    /** Refreshes the cache with a complete answer for [view]. */
+    /**
+     * Refreshes the cache with a complete answer for [view]. A `304` answer
+     * already matches [previous]; rewriting an unchanged multi-megabyte body
+     * would only churn the disk.
+     */
     private suspend fun storeCachedHistory(
         sid: String,
         view: HistoryView,
         body: String?,
+        etag: String?,
         page: ContextPage,
+        previous: CachedTranscript?,
     ) {
         val cache = transcripts ?: return
         if (body.isNullOrEmpty() || page.messages.isEmpty() || page.hasMore) return
+        if (previous != null && previous.body == body && previous.etag == etag) return
         val origin = view.origin ?: return
         // The answer belongs to the server the request went to. A switch while
         // it was on the wire (the container already wiped the disk cache) must
         // not file another installation's transcript — nor undo the wipe.
         if (settings.snapshot.value.origin?.origin != origin) return
         withContext(cacheDispatcher) {
-            cache.write(origin, sid, view.leafId, view.includePreCompaction, body)
+            cache.write(origin, sid, view.leafId, view.includePreCompaction, body, etag)
         }
     }
 
@@ -2766,18 +2813,40 @@ class ChatViewModel(
      * transcript it is (a notification tap into a dialog of a fresh session
      * must not paint a load error); a 404 from a session the server no longer
      * runs keeps the error.
+     *
+     * With [cached] the request is conditional: a `304` means the cached body
+     * for this exact view is current. A `304` whose body is gone by now (the
+     * LRU evicted it meanwhile) is refetched without the header, so a
+     * validator can never produce an empty transcript.
      */
-    private suspend fun loadFullContext(sid: String, view: HistoryView): HistoryResponse {
+    private suspend fun loadFullContext(
+        sid: String,
+        view: HistoryView,
+        cached: CachedTranscript?,
+    ): HistoryResponse {
         try {
-            val body = api.contextFullRaw(
+            val answer = api.contextFullConditional(
                 sessionId = sid,
                 leafId = view.leafId,
                 includePreCompaction = view.includePreCompaction,
+                etag = cached?.etag,
             )
-            return HistoryResponse(body, parseContextBody(body))
+            if (answer.body == null) {
+                val body = cached?.body?.takeIf { it.isNotEmpty() }
+                if (body != null) {
+                    return HistoryResponse(body, answer.etag ?: cached?.etag, parseContextBody(body))
+                }
+                val refetched = api.contextFullRaw(
+                    sessionId = sid,
+                    leafId = view.leafId,
+                    includePreCompaction = view.includePreCompaction,
+                )
+                return HistoryResponse(refetched, null, parseContextBody(refetched))
+            }
+            return HistoryResponse(answer.body, answer.etag, parseContextBody(answer.body))
         } catch (missing: ApiError.Http) {
             if (missing.code != 404 || !sessionIsLive(sid)) throw missing
-            return HistoryResponse(null, JsonObject(emptyMap()))
+            return HistoryResponse(null, null, JsonObject(emptyMap()))
         }
     }
 
@@ -2793,7 +2862,7 @@ class ChatViewModel(
 
     /** `GET /api/agent/{id}`: the server still has a runner (child) for [sid]. */
     private suspend fun sessionIsLive(sid: String): Boolean = try {
-        val body = api.agentState(sid)
+        val body = api.agentState(sid, systemPrompt = false)
         // `alive` is the child; `running` is a turn in flight. An idle wrapper
         // still serves the session, so only `alive` answers this. An older
         // server has no `alive` and used `running` for exactly this.
@@ -2852,7 +2921,7 @@ class ChatViewModel(
         metaJob?.cancel()
         metaJob = viewModelScope.launch {
             try {
-                val detail = api.sessionDetail(sid)
+                val detail = api.sessionDetail(sid, meta = true)
                 if (sessionId != sid) return@launch
                 detailLeafId = detail.leafId
                 val tree = BranchTree.parse(detail.tree)
@@ -3654,7 +3723,12 @@ class ChatViewModel(
         val runsEnded = engine.state.value.runsEnded
         try {
             val queueRevision = engine.state.value.queueRevision
-            val root = api.agentState(sid)
+            // The poll leaves the prompt out unless its panel is open: then it
+            // is the explicit requester and stays in sync (`refreshOpenSystemPrompt`).
+            val root = api.agentState(
+                sid,
+                systemPrompt = _ui.value.systemPrompt !is SystemPromptState.Idle,
+            )
             if (sessionId != sid || engine.state.value.runId != runId) return LiveRead.Skipped
             if (engine.state.value.runsEnded != runsEnded) return LiveRead.Skipped
             clearSlowStateAnswers()
@@ -3968,7 +4042,14 @@ class ChatViewModel(
 
     private companion object {
         const val FRAME_COALESCE_MILLIS = 16L
-        const val RECONCILE_MILLIS = 15_000L
+        /**
+         * Live-state poll while the session channel is open. The stream is the
+         * authority for what happens in a run, so this is a safety net for a
+         * missed frame, not the primary path: 30 s halves the 14 KB the old
+         * 15 s cadence cost per poll without delaying anything the stream
+         * delivers.
+         */
+        const val RECONCILE_MILLIS = 30_000L
         /**
          * Another omp process owns the chat: its transcript is followed by
          * polling (web `EXTERNAL_RUN_POLL_MS`, 2 s) for as long as the owner

@@ -16,7 +16,12 @@ import kotlinx.serialization.json.longOrNull
 data class GoalState(
     val id: String,
     val objective: String,
-    /** `active` or `paused`; dropped/completed goals are not shown. */
+    /**
+     * `active`, `paused` or `budget-limited`; dropped/completed goals are not
+     * shown. `budget-limited` is a live goal whose token budget is spent: omp
+     * treats it as running (it can still be dropped, but not paused), so the
+     * banner keeps it visible instead of making it disappear.
+     */
     val status: String,
     val tokenBudget: Long? = null,
     val tokensUsed: Long = 0,
@@ -26,8 +31,11 @@ data class GoalState(
 ) {
     val paused: Boolean get() = status == "paused"
 
+    /** The token budget ran out: no Pause, only Drop; the banner says so. */
+    val budgetLimited: Boolean get() = status == "budget-limited"
+
     /** The banner shows live goals only; a dropped/completed one is gone. */
-    val visible: Boolean get() = status == "active" || status == "paused"
+    val visible: Boolean get() = status == "active" || status == "paused" || status == "budget-limited"
 }
 
 /** Parse one `{id, objective, status, …}` goal object; null when absent/invalid. */
@@ -49,9 +57,21 @@ fun parseGoal(element: JsonElement?): GoalState? {
     )
 }
 
+/**
+ * The goal snapshot of `get_state`/`goal_updated`: omp wraps its `GoalInfo` in
+ * a `GoalModeState` (`{enabled, mode, goal}`), so the goal object sits one
+ * level down. A flat `GoalInfo` is accepted as the fallback an older omp (or a
+ * server that passes the goal through) may still send.
+ */
+fun parseGoalSnapshot(element: JsonElement?): GoalState? {
+    val root = element as? JsonObject ?: return null
+    if (root.containsKey("goal")) return parseGoal(root["goal"])
+    return parseGoal(root)
+}
+
 /** The `goal` object of a `goal` RPC reply (`data.goal`), or of `get_state`. */
 fun parseGoalFromCommandData(data: JsonElement?): GoalState? =
-    parseGoal((data as? JsonObject)?.get("goal"))
+    parseGoalSnapshot((data as? JsonObject)?.get("goal"))
 
 /**
  * True when omp (or the server wrapping it) does not know the `goal` command.

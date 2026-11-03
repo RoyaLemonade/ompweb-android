@@ -52,7 +52,7 @@ class SessionCacheStoreTest {
 
         assertNull("a server switch must not inherit the list", cache.readSessions("http://b:2"))
         assertNull(cache.readProjects("http://b:2"))
-        assertNull(cache.read("http://b:2", "s1", null, false))
+        assertNull(cache.read("http://b:2", "s1", null, false)?.body)
     }
 
     @Test
@@ -60,10 +60,25 @@ class SessionCacheStoreTest {
         val cache = store()
         cache.write("http://a:1", "s1", "leaf-1", false, """{"context":{}}""")
 
-        assertEquals("""{"context":{}}""", cache.read("http://a:1", "s1", "leaf-1", false))
-        assertNull("another branch is not this transcript", cache.read("http://a:1", "s1", "leaf-2", false))
-        assertNull(cache.read("http://a:1", "s1", "leaf-1", true))
-        assertNull(cache.read("http://a:1", "s2", "leaf-1", false))
+        assertEquals("""{"context":{}}""", cache.read("http://a:1", "s1", "leaf-1", false)?.body)
+        assertNull("another branch is not this transcript", cache.read("http://a:1", "s1", "leaf-2", false)?.body)
+        assertNull(cache.read("http://a:1", "s1", "leaf-1", true)?.body)
+        assertNull(cache.read("http://a:1", "s2", "leaf-1", false)?.body)
+    }
+
+    @Test
+    fun aTranscriptKeepsTheEtagOfItsAnswer() {
+        val cache = store()
+        cache.write("http://a:1", "s1", "leaf-1", false, """{"context":{}}""", "\"v1\"")
+
+        val cached = cache.read("http://a:1", "s1", "leaf-1", false)!!
+        assertEquals("""{"context":{}}""", cached.body)
+        assertEquals("the validator travels with the body", "\"v1\"", cached.etag)
+
+        // A later answer without a validator (older server) clears it, so the
+        // next open cannot revalidate against an unrelated answer.
+        cache.write("http://a:1", "s1", "leaf-1", false, """{"context":{"v":2}}""")
+        assertNull(cache.read("http://a:1", "s1", "leaf-1", false)?.etag)
     }
 
     @Test
@@ -77,16 +92,16 @@ class SessionCacheStoreTest {
 
         // Touch s1 so it becomes the most recently used entry.
         now = 4_000L
-        assertNotNull(cache.read("http://a:1", "s1", null, false))
+        assertNotNull(cache.read("http://a:1", "s1", null, false)?.body)
 
         now = 5_000L
         cache.write("http://a:1", "s4", null, false, """{"n":4}""")
 
         assertEquals(3, cache.transcriptCount("http://a:1"))
-        assertNotNull("touched entry survives", cache.read("http://a:1", "s1", null, false))
-        assertNull("oldest untouched entry is gone", cache.read("http://a:1", "s2", null, false))
-        assertNotNull(cache.read("http://a:1", "s3", null, false))
-        assertNotNull(cache.read("http://a:1", "s4", null, false))
+        assertNotNull("touched entry survives", cache.read("http://a:1", "s1", null, false)?.body)
+        assertNull("oldest untouched entry is gone", cache.read("http://a:1", "s2", null, false)?.body)
+        assertNotNull(cache.read("http://a:1", "s3", null, false)?.body)
+        assertNotNull(cache.read("http://a:1", "s4", null, false)?.body)
     }
 
     @Test
@@ -94,7 +109,7 @@ class SessionCacheStoreTest {
         val cache = store(maxTranscriptBytes = 20)
         cache.write("http://a:1", "s1", null, false, """{"payload":"${"x".repeat(64)}"}""")
 
-        assertNull(cache.read("http://a:1", "s1", null, false))
+        assertNull(cache.read("http://a:1", "s1", null, false)?.body)
         assertEquals(0, cache.transcriptCount("http://a:1"))
     }
 
@@ -102,11 +117,11 @@ class SessionCacheStoreTest {
     fun anOversizedRewriteDropsThePreviousCopy() {
         val cache = store(maxTranscriptBytes = 20)
         cache.write("http://a:1", "s1", null, false, """{"v":1}""")
-        assertNotNull(cache.read("http://a:1", "s1", null, false))
+        assertNotNull(cache.read("http://a:1", "s1", null, false)?.body)
 
         cache.write("http://a:1", "s1", null, false, """{"payload":"${"x".repeat(64)}"}""")
 
-        assertNull("a stale copy must not answer the open", cache.read("http://a:1", "s1", null, false))
+        assertNull("a stale copy must not answer the open", cache.read("http://a:1", "s1", null, false)?.body)
     }
 
     @Test
@@ -119,9 +134,9 @@ class SessionCacheStoreTest {
         }
 
         assertEquals(2, cache.transcriptCount("http://a:1"))
-        assertNull(cache.read("http://a:1", "s1", null, false))
-        assertNotNull(cache.read("http://a:1", "s2", null, false))
-        assertNotNull(cache.read("http://a:1", "s3", null, false))
+        assertNull(cache.read("http://a:1", "s1", null, false)?.body)
+        assertNotNull(cache.read("http://a:1", "s2", null, false)?.body)
+        assertNotNull(cache.read("http://a:1", "s3", null, false)?.body)
     }
 
     @Test
@@ -133,7 +148,7 @@ class SessionCacheStoreTest {
         assertEquals(1, bodyFiles.size)
         bodyFiles.single().writeText("")
 
-        assertNull(cache.read("http://a:1", "s1", null, false))
+        assertNull(cache.read("http://a:1", "s1", null, false)?.body)
         assertEquals(0, cache.transcriptCount("http://a:1"))
     }
 
@@ -157,8 +172,8 @@ class SessionCacheStoreTest {
         cache.clearAll()
 
         assertNull(cache.readSessions("http://a:1"))
-        assertNull(cache.read("http://a:1", "s1", null, false))
-        assertNull(cache.read("http://b:2", "s1", null, false))
+        assertNull(cache.read("http://a:1", "s1", null, false)?.body)
+        assertNull(cache.read("http://b:2", "s1", null, false)?.body)
         assertTrue(File(temp.root, "session-cache").listFiles().orEmpty().isEmpty())
     }
 
@@ -174,7 +189,7 @@ class SessionCacheStoreTest {
         // A broken index (filesystem, external tool): the entries are gone, the
         // bodies are still there and were unreachable from then on.
         File(dir, "transcripts.json").writeText("{not json")
-        assertNull(cache.read("http://a:1", "s1", null, false))
+        assertNull(cache.read("http://a:1", "s1", null, false)?.body)
 
         now = 3_000L
         cache.write("http://a:1", "s3", null, false, "z".repeat(100))
@@ -185,7 +200,7 @@ class SessionCacheStoreTest {
             dir.listFiles().orEmpty().count { it.name.startsWith("t-") },
         )
         assertEquals(1, cache.transcriptCount("http://a:1"))
-        assertNull("the orphaned transcript stays a miss", cache.read("http://a:1", "s1", null, false))
+        assertNull("the orphaned transcript stays a miss", cache.read("http://a:1", "s1", null, false)?.body)
     }
 
     @Test
@@ -194,7 +209,7 @@ class SessionCacheStoreTest {
         cache.write("http://a:1", "s1", null, false, "")
         cache.writeSessions("http://a:1", "", "\"etag\"")
 
-        assertNull(cache.read("http://a:1", "s1", null, false))
+        assertNull(cache.read("http://a:1", "s1", null, false)?.body)
         assertNull(cache.readSessions("http://a:1"))
     }
 }

@@ -31,33 +31,3 @@ fun projectMatchesSearch(project: ManagedProject, query: String): Boolean {
     return projectPathLabel(project.path).lowercase(Locale.ROOT).contains(q) ||
         (project.alias ?: "").lowercase(Locale.ROOT).contains(q)
 }
-
-/**
- * The sidebar's filtered project/session entries in project order.
- *
- * Mirrors the web filter exactly: `runningOnly` first, then the search term;
- * a project is dropped when it has no sessions left and either `runningOnly`
- * is active or the term matches neither its label nor its alias. Without any
- * filter every project stays visible, even without sessions.
- */
-fun visibleSessionEntries(
-    projects: List<ManagedProject>,
-    sessionsByProject: Map<String, List<SessionSummary>>,
-    runningOnly: Boolean,
-    runningIds: Set<String>,
-    query: String,
-): List<Pair<ManagedProject, List<SessionSummary>>> {
-    val q = query.trim()
-    val entries = ArrayList<Pair<ManagedProject, List<SessionSummary>>>(projects.size)
-    for (project in projects) {
-        var list = sessionsByProject[project.path].orEmpty()
-        if (runningOnly) list = list.filter { it.id in runningIds }
-        if (q.isNotEmpty()) list = list.filter { sessionMatchesSearch(it, q) }
-        if (list.isEmpty()) {
-            if (runningOnly) continue
-            if (q.isNotEmpty() && !projectMatchesSearch(project, q)) continue
-        }
-        entries += project to list
-    }
-    return entries
-}

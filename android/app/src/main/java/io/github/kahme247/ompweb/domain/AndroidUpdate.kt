@@ -103,11 +103,12 @@ const val ANDROID_UPDATE_CACHE_MILLIS: Long = 6L * 60L * 60L * 1000L
 
 /**
  * How old the last successful check may be when the app comes back to the
- * foreground. The process lives for days, so the six-hour cache would leave a
- * published update unseen for most of that time; past this window the source
- * is asked again on every later return.
+ * foreground. The manual "Check for updates" button passes `force = true` and
+ * is unaffected, so the foreground path reuses the six-hour cache instead of
+ * hitting GitHub (53 KB) on every return: at the old 30-minute window a day of
+ * app switching cost ~1 MB for an answer that changes a few times a month.
  */
-const val ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS: Long = 30L * 60L * 1000L
+const val ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS: Long = ANDROID_UPDATE_CACHE_MILLIS
 
 /** A downloaded update larger than this is refused before and during the download. */
 const val MAX_ANDROID_UPDATE_BYTES: Long = 200L * 1024L * 1024L

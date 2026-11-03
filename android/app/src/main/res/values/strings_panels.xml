@@ -50,6 +50,7 @@
     <!-- Composer status banners -->
     <string name="panels_goal_active">Goal active</string>
     <string name="panels_goal_paused">Goal paused</string>
+    <string name="panels_goal_budget_limited">Goal budget reached</string>
     <string name="panels_goal_expand">Expand active goal</string>
     <string name="panels_goal_collapse">Collapse active goal</string>
     <string name="panels_goal_pause">Pause</string>

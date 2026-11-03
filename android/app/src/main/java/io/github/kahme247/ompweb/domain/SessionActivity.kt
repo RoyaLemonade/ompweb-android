@@ -9,20 +9,24 @@ import java.time.format.DateTimeFormatter
 /**
  * "Last used" of a session, as the workspace shows it.
  *
- * The server's session list carries no "last message" field: `modified` is the
- * session file's mtime (`lib/omp/session-files.ts` reads `statSync().mtime`),
- * and omp writes that file for reasons that are not a message. Resuming a chat
- * appends a `session_exit` entry (and background bookkeeping such as
- * `model_usage`), so merely opening — or reloading — a chat moved its row to
- * "just now" while the last real message was hours old.
+ * `modified` is the session file's mtime (`lib/omp/session-files.ts` reads
+ * `statSync().mtime`), and omp writes that file for reasons that are not a
+ * message. Resuming a chat appends a `session_exit` entry (and background
+ * bookkeeping such as `model_usage`), so merely opening — or reloading — a chat
+ * moved its row to "just now" while the last real message was hours old.
  *
- * The chat screen therefore records the newest user/assistant message of every
- * transcript it has loaded ([lastConversationAt]) and the workspace paints that
- * instant instead of the file time ([withKnownActivity]). A session this device
- * never opened has no record, and the server's `modified` stays the best
- * available answer. A message written by another client (the web UI, a
- * terminal) is not seen by this device until the chat is opened here; only a
- * server-provided `lastMessageAt` could close that gap.
+ * Two better sources exist and [withKnownActivity] combines them:
+ *
+ * - the server's `lastMessageAt` (newest user/assistant message, read from the
+ *   session file by the server), which also covers messages written by another
+ *   client (the web UI, a terminal);
+ * - the newest user/assistant message this device has seen in a loaded
+ *   transcript ([lastConversationAt]), recorded by the chat screen.
+ *
+ * The server value wins over the local memo; the memo is newer only while the
+ * server's list has not rescanned the file yet, and the display takes the newer
+ * of both. Without `lastMessageAt` (an older server) the memo replaces the file
+ * time as before, and a session with neither keeps `modified`.
  */
 
 /**
@@ -56,11 +60,17 @@ fun sessionTimestampOf(at: Long): String =
  * a record keeps the server's file time.
  */
 fun List<SessionSummary>.withKnownActivity(known: Map<String, Long>): List<SessionSummary> {
-    if (known.isEmpty() || isEmpty()) return this
+    if (isEmpty()) return this
     var replaced = false
     val projected = map { session ->
-        val at = known[session.id]
-        if (at == null) {
+        // The server's newest message is the better answer than the file time;
+        // a local memo can still be newer for a message the list has not
+        // rescanned yet, so the display takes the later of both.
+        val serverAt = session.lastMessageAt?.let { parseSessionTimestamp(it)?.toEpochMilli() }
+        val knownAt = known[session.id]
+        // The later of both; a null side drops out.
+        val at: Long? = listOfNotNull(serverAt, knownAt).maxOrNull()
+        if (at == null || at <= 0) {
             session
         } else {
             replaced = true

@@ -494,13 +494,16 @@ class NotificationsTest {
     fun `the presence keep-alive stays under the server TTL`() {
         // The server drops the entry after 60 s; a native device has no push
         // subscription and is only addressed through that entry.
-        assertTrue("the beat keeps the entry fresh", nextPresenceDelayMillis(true) < PRESENCE_TTL_MILLIS)
         assertEquals(PRESENCE_KEEPALIVE_MILLIS, nextPresenceDelayMillis(true))
         assertEquals("a failed report comes back sooner", PRESENCE_RETRY_MILLIS, nextPresenceDelayMillis(false))
+        // A failed report at T+45 s plus its retry delay must stay inside the
+        // TTL: the fixed 30 s retry landed at T+75 s, 15 s after the entry was
+        // already gone.
         assertTrue(
-            "one lost report is caught up before the entry expires",
-            nextPresenceDelayMillis(false) < PRESENCE_KEEPALIVE_MILLIS,
+            "the retry after a lost report lands before the entry expires",
+            PRESENCE_KEEPALIVE_MILLIS + PRESENCE_RETRY_MILLIS < PRESENCE_TTL_MILLIS,
         )
+        assertTrue("the retry is not the old fixed beat", PRESENCE_RETRY_MILLIS < PRESENCE_KEEPALIVE_MILLIS)
     }
 
     @Test

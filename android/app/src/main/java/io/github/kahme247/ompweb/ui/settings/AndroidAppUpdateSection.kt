@@ -172,6 +172,16 @@ internal fun AndroidAppUpdateCard(
                         Text(stringResource(R.string.system_android_update_confirm))
                     }
                 }
+                update.install is AndroidUpdateInstallState.ConfirmMetered -> {
+                    Button(onClick = controller::confirmMeteredDownload) {
+                        Text(stringResource(R.string.android_update_banner_metered_confirm))
+                    }
+                    // The banner's cancel is not on screen once the user is in
+                    // Settings: without this button the question had no "no".
+                    TextButton(onClick = controller::cancelInstall) {
+                        Text(stringResource(R.string.system_android_update_cancel))
+                    }
+                }
                 update.install is AndroidUpdateInstallState.Downloading ||
                     update.install == AndroidUpdateInstallState.Verifying -> {
                     OutlinedButton(onClick = controller::cancelInstall) {

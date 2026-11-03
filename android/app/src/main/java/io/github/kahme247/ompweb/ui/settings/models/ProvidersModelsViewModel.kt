@@ -181,6 +181,11 @@ class ProvidersModelsViewModel(
     private val auth: AuthApi,
     private val settings: ChatSettings,
     private val scope: CoroutineScope,
+    /**
+     * Called after a successful save: the composer's process cache holds the
+     * old model catalog until it is told, so a new model must invalidate it.
+     */
+    private val onModelsConfigSaved: () -> Unit = {},
 ) {
     private val _state = MutableStateFlow(ProvidersModelsState())
     val state: StateFlow<ProvidersModelsState> = _state.asStateFlow()
@@ -533,6 +538,7 @@ class ProvidersModelsViewModel(
             result.fold(
                 onSuccess = {
                     _state.update { it.copy(savingConfig = false, message = "models.yml saved.", messageIsError = false) }
+                    onModelsConfigSaved()
                     refresh()
                 },
                 onFailure = { error ->
@@ -562,6 +568,7 @@ class ProvidersModelsViewModel(
                     _state.update {
                         it.copy(savingConfig = false, parseError = null, message = "models.yml overwritten.", messageIsError = false)
                     }
+                    onModelsConfigSaved()
                     refresh()
                 },
                 onFailure = { error ->

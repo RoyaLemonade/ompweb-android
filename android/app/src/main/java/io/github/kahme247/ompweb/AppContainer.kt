@@ -59,6 +59,7 @@ import io.github.kahme247.ompweb.ui.panels.extension.ExtensionUiController
 import io.github.kahme247.ompweb.ui.composer.AndroidCompletionSound
 import io.github.kahme247.ompweb.ui.composer.ComposerStrings
 import io.github.kahme247.ompweb.ui.composer.controls.ComposerControlsViewModel
+import io.github.kahme247.ompweb.ui.composer.controls.ModelCatalogCache
 import io.github.kahme247.ompweb.ui.composer.controls.WordPredictor
 import io.github.kahme247.ompweb.ui.composer.controls.wordInputCapabilities
 import io.github.kahme247.ompweb.ui.composer.dictation.AndroidDictationStore
@@ -203,7 +204,21 @@ class AppContainer(context: Context) {
         ),
         inspector = PackageManagerAndroidApkInspector(appContext),
         installer = PackageInstallerAndroidApkInstaller(appContext),
+        // The release certificate the updater only ever installs (A1). Debug
+        // builds carry a debug key and cannot install at all, so the in-app
+        // install path is off there regardless of the feed.
+        expectedSignerSha256 = BuildConfig.RELEASE_SIGNING_SHA256,
+        installAllowed = !BuildConfig.DEBUG,
+        // A 6 MB APK on mobile data needs an explicit yes (P8); Wi-Fi is
+        // unchanged.
+        metered = { isActiveNetworkMetered(appContext) },
     )
+
+    /** `ConnectivityManager.isActiveNetworkMetered`; unknown is treated as unmetered. */
+    private fun isActiveNetworkMetered(context: Context): Boolean {
+        val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        return runCatching { manager.isActiveNetworkMetered }.getOrDefault(false)
+    }
 
     private val cookieCipher = KeystoreCookieCipher()
 
@@ -343,6 +358,9 @@ class AppContainer(context: Context) {
             val snapshot = settings.snapshot.value
             snapshot.origin != null && (!snapshot.needsPassword || cookieJar.hasCookies())
         },
+        presenceOptional = serverInfo
+            .map { info -> info?.supportsPresenceOptional == true }
+            .stateIn(appScope, SharingStarted.Eagerly, false),
     )
 
     /** App-wide read-aloud engine; binds TTS lazily on first use. */
@@ -387,7 +405,10 @@ class AppContainer(context: Context) {
     }
 
     /** Slice B controls for the chat composer; `open()` rebinds it per session. */
-    val chatControls = ComposerControlsViewModel(api, settings, appScope)
+    /** The process-wide `GET /api/models` catalog (one entry per cwd, 1 h TTL). */
+    val modelCatalog = ModelCatalogCache()
+
+    val chatControls = ComposerControlsViewModel(api, settings, appScope, modelCatalog)
 
     /** Slice C dictation for the chat composer; owned by the process so jobs adopt. */
     val chatDictation = DictationViewModel(
@@ -437,7 +458,7 @@ class AppContainer(context: Context) {
     )
 
     /** A separate controls instance: a new session has its own spawn choices. */
-    val newSessionControls = ComposerControlsViewModel(api, settings, appScope)
+    val newSessionControls = ComposerControlsViewModel(api, settings, appScope, modelCatalog)
     val newSessionDictation = DictationViewModel(
         sttApi,
         dictationStore,
@@ -568,6 +589,10 @@ class AppContainer(context: Context) {
         // Same rule for the heap: the list/ETag per origin and the shared detail
         // answers (whole transcripts) must not outlive the account either.
         api.clearMemoryCaches()
+        // The model catalog of the installation being left: its providers and
+        // models are the old server's, and the next account on the same origin
+        // may not see them at all.
+        modelCatalog.invalidate()
         _pendingShare.value = emptyList()
         chatDictation.clearSessionData()
         newSessionDictation.clearSessionData()
@@ -752,11 +777,10 @@ class AppContainer(context: Context) {
                     androidUpdates.resumeInstallAfterPermission()
                     // Android keeps the process alive for days, so a check on
                     // start alone would rarely run again. Every later return
-                    // to the foreground rechecks, and the controller bypasses
-                    // its six-hour cache once the last answer is older than
-                    // 30 minutes - otherwise a published release could stay
-                    // unseen for most of the day. Inside that window the
-                    // cached answer is reused, so app switching stays offline.
+                    // to the foreground runs through the controller, which
+                    // reuses its six-hour cache (and revalidates past it), so
+                    // app switching stays offline; only the settings button
+                    // forces a check.
                     // The cold start is skipped: the shell staggers its own
                     // check until content is on screen, and the stored source
                     // is seeded by then.

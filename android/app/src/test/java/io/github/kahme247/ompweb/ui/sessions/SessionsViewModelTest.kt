@@ -763,6 +763,28 @@ class SessionsViewModelTest {
     }
 
     @Test
+    fun `a hidden list pane defers the reload asked for by a sessions-changed frame`() {
+        sessionResponses.add(sessions("""{"sessions":[{"id":"a"}],"runningSessionIds":[]}"""))
+        viewModel.setActive(true)
+        val stream = open()
+        waitFor("initial list") { viewModel.state.value.sessions.size == 1 }
+        waitFor("running subscription") { transport.subscribes.isNotEmpty() }
+
+        // A chat covers the list on a phone; the running agent still writes its
+        // session file and each write used to reload ~130 KB nobody sees.
+        viewModel.setListVisible(false)
+        Thread.sleep(200)
+        val before = server.requestCount
+        stream.send("s1", """{"type":"sessions-changed"}""")
+        Thread.sleep(1_200)
+        assertEquals("no reload while the list is hidden", before, server.requestCount)
+
+        sessionResponses.add(sessions("""{"sessions":[{"id":"a"},{"id":"b"}],"runningSessionIds":[]}"""))
+        viewModel.setListVisible(true)
+        waitFor("the return reloads once") { viewModel.state.value.sessions.size == 2 }
+    }
+
+    @Test
     fun `a remembered new-session cwd is validated before the pane is restored`() {
         sessionResponses.add(sessions("""{"sessions":[],"runningSessionIds":[]}"""))
         cwdResponses.add(json("""{"success":true,"cwd":"/work/project","projectRoot":"/work"}"""))

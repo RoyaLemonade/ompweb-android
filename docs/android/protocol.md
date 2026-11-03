@@ -240,7 +240,14 @@ Snapshot.
 
 #### `notifications`
 
-Parameter: `clientId` (ID dieses Tabs, 8–64 Zeichen `[A-Za-z0-9_-]`).
+Parameter: `clientId` (ID dieses Tabs, 8–64 Zeichen `[A-Za-z0-9_-]`),
+`deviceId` (die Geräte-ID aus `PUT /api/notifications/devices`, optional).
+Der Server ordnet den Stream über `deviceId` einem Gerät zu: ohne lebenden
+Presence-Eintrag ist der Stream „reachable“, aber nicht sichtbar, und `os`/
+`dismiss` gehen nur an ihn, wenn **sein** Gerät den Typ aktiviert hat und kein
+Push-Abo besitzt. Ohne `deviceId` bleibt das Vorverhalten (keine Zustellung an
+reine Stream-Clients). Ein sichtbarer Presence-Eintrag unterdrückt weiterhin
+alles (§ Routing unten).
 
 Frames (`lib/event-stream-hub.ts:287-300`):
 
@@ -1297,15 +1304,18 @@ Presence gilt 60 s nach dem letzten Report (`PRESENCE_TTL_MS`,
 
 Für die Android-App ist der Presence-Eintrag deshalb **nicht** nur die
 Unterdrückung des gelesenen Chats (Regel 1): sie hat keine Push-Subscription,
-also adressiert Regel 3 ihre `os`- und `dismiss`-Frames ausschließlich über
-`presence` × `reachable`. Der Vordergrunddienst hält den Eintrag daher mit
-45 s unter der TTL frisch (`domain/Notifications.kt`,
-`nextPresenceDelayMillis`; ein fehlgeschlagener Report wird nach 30 s
-wiederholt) und sendet nur, solange der Stream verbunden ist. Zustandswechsel
-(Foreground, sichtbarer Chat, Chat verlassen) gehen sofort raus, mit
-monotonem `seq`. Ohne Presence-Eintrag wäre das Gerät im Hintergrund für
-`os`-Frames unerreichbar — der Grund, warum erst eine Protokollerweiterung
-(Geräte-ID an der Subscription) oder echtes Push den Keep-alive ersparen kann.
+also adressiert Regel 3 ihre `os`- und `dismiss`-Frames über `presence` ×
+`reachable` oder — mit `presenceOptional` — über die Geräte-ID des Streams.
+Der Vordergrunddienst hält den Eintrag daher mit 45 s unter der TTL frisch
+(`domain/Notifications.kt`, `nextPresenceDelayMillis`; ein fehlgeschlagener
+Report wird nach 10 s wiederholt) und sendet nur, solange der Stream
+verbunden ist. Zustandswechsel (Foreground, sichtbarer Chat, Chat verlassen)
+gehen sofort raus, mit monotonem `seq`. Mit `presenceOptional` entfällt der
+Beat im Hintergrund; der eine `visible:false`-Übergangsreport wird dann bis
+zur TTL wiederholt (`deliverPresence`), damit ein verlorener POST den Chat
+nicht eine Minute lang unterdrückt. Ohne die Capability gilt das alte
+Verhalten (Beat auch im Hintergrund), weil die Zustellung dort am
+Presence-Eintrag hängt.
 
 Push-Payload (`lib/notification-hub.ts:170-182`, `lib/notification-events.ts:96-134`):
 

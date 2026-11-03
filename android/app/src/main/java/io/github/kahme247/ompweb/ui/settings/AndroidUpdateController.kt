@@ -47,6 +47,12 @@ sealed interface AndroidUpdateInstallState {
     /** Android's "install unknown apps" permission is missing; the UI offers the settings link. */
     data object NeedsPermission : AndroidUpdateInstallState
 
+    /**
+     * The APK would cross mobile data and nobody confirmed it yet. [sizeBytes]
+     * is the announced download size (0 when the feed does not say).
+     */
+    data class ConfirmMetered(val sizeBytes: Long) : AndroidUpdateInstallState
+
     /** [message] is the clear reason nothing was installed. */
     data class Failed(val message: String) : AndroidUpdateInstallState
 }
@@ -82,14 +88,13 @@ data class AndroidUpdateState(
  * on start, on every return to the foreground and on demand, a six-hour cache
  * per source, and no polling.
  *
- * Two rules shorten that cache. A cache written for another installed build
- * (an app update happened since) is ignored — the new build is checked once,
- * even when the old answer is minutes old. And a return to the foreground
- * revalidates the source once the answer is older than
- * [ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS] (30 minutes), because the app
- * process lives for days and a six-hour window would keep a published release
- * unseen for most of them. Cold start and the Settings button keep the
- * six-hour rule and `force = true` respectively.
+ * A cache written for another installed build (an app update happened since)
+ * is ignored — the new build is checked once, even when the old answer is
+ * minutes old. A return to the foreground revalidates only once the answer is
+ * older than [ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS] (six hours, like the
+ * cache itself): the feed is 53 KB on GitHub and changes a few times a month,
+ * so the old 30-minute revalidation was ~1 MB a day of pure app switching. The
+ * Settings button keeps `force = true` and always checks.
  *
  * Failures stay quiet — the banner is a hint, not an error surface — and the
  * cached answer is kept, so being offline never turns into a false "up to
@@ -112,6 +117,12 @@ class AndroidUpdateController(
     private val installer: AndroidApkInstaller? = null,
     private val installStatus: Flow<AndroidInstallSessionStatus> = AndroidUpdateInstallBridge.events,
     private val now: () -> Long = { System.currentTimeMillis() },
+    /** The release certificate every downloaded APK must carry (A1). */
+    private val expectedSignerSha256: String = "",
+    /** False on debug builds: they are signed with a debug key, so installing is off. */
+    private val installAllowed: Boolean = true,
+    /** Whether the active connection is metered; a 6 MB APK needs a yes there (P8). */
+    private val metered: () -> Boolean = { false },
 ) {
 
     private val installedVersion = normalizeInstalledVersion(currentVersion)
@@ -193,10 +204,10 @@ class AndroidUpdateController(
     }
 
     /**
-     * Check for a return to the foreground. Unlike [check] this bypasses the
-     * six-hour cache once [AndroidUpdateState.checkedAtMillis] is older than
-     * [ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS]; inside that window the answer
-     * is reused so switching apps does not hit the network each time.
+     * Check for a return to the foreground. It reuses the answer until
+     * [ANDROID_UPDATE_FOREGROUND_CACHE_MILLIS] (six hours) old, so app
+     * switching does not hit the network; past it the source is asked again.
+     * The Settings button stays the forced path.
      */
     fun checkOnForeground() {
         if (_state.value.checking) return
@@ -306,6 +317,9 @@ class AndroidUpdateController(
         installJob?.cancel()
         installJob = null
         installSessionId = null
+        // An abandoned attempt forgets the metered-network yes as well: the
+        // next install asks again instead of downloading silently.
+        meteredDownloadConfirmed = false
         _state.update { it.copy(install = AndroidUpdateInstallState.Idle) }
     }
 
@@ -381,14 +395,27 @@ class AndroidUpdateController(
             -> return
             else -> Unit
         }
+        if (!installAllowed) return failInstall("This build cannot install updates.")
         val downloader = downloader ?: return failInstall("Updates cannot be installed by this build.")
         val inspector = inspector ?: return failInstall("Updates cannot be verified by this build.")
         val installer = installer ?: return failInstall("Updates cannot be installed by this build.")
         if (!candidate.canInstall) return failInstall("This release has no APK to install.")
+        // A 6 MB download on mobile data is the user's decision, not a
+        // background assumption; Wi-Fi downloads start as before.
+        if (metered() && !meteredDownloadConfirmed) {
+            _state.update {
+                it.copy(install = AndroidUpdateInstallState.ConfirmMetered(candidate.apkSize ?: 0))
+            }
+            return
+        }
+        // The permission question comes first: the "unknown apps" detour ends
+        // in `resumeInstallAfterPermission`, and a confirmation consumed before
+        // it would be asked for a second time on the way back.
         if (!installer.canInstallPackages) {
             _state.update { it.copy(install = AndroidUpdateInstallState.NeedsPermission) }
             return
         }
+        meteredDownloadConfirmed = false
 
         installSessionId = null
         installJob = scope.launch {
@@ -414,6 +441,7 @@ class AndroidUpdateController(
                     announcedVersionCode = candidate.versionCode,
                     expectedSha256 = result.expectedSha256,
                     actualSha256 = actualSha256,
+                    expectedSignerSha256 = expectedSignerSha256,
                 )
                 if (decision is AndroidInstallDecision.Refuse) {
                     _state.update { it.copy(install = AndroidUpdateInstallState.Failed(decision.message)) }
@@ -442,6 +470,19 @@ class AndroidUpdateController(
                 installJob = null
             }
         }
+    }
+
+    /**
+     * The metered-network confirmation: the one explicit yes that lets
+     * [install] download over mobile data. Consumed by the next attempt.
+     */
+    private var meteredDownloadConfirmed = false
+
+    fun confirmMeteredDownload() {
+        if (_state.value.install !is AndroidUpdateInstallState.ConfirmMetered) return
+        meteredDownloadConfirmed = true
+        _state.update { it.copy(install = AndroidUpdateInstallState.Idle) }
+        install()
     }
 
     private fun failInstall(message: String) {

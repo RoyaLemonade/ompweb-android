@@ -90,6 +90,50 @@ class SessionPlaceholdersTest {
     }
 
     @Test
+    fun `an unanswerable project list falls back to the sessions' workspaces`() {
+        // `/api/projects` failed or has not answered yet: without rows the
+        // grouping would drop these sessions and the list would look empty.
+        val sessions = listOf(
+            SessionSummary(
+                id = "s1",
+                cwd = "/work/app",
+                projectRoot = "/work/app",
+                projectKey = "/work/app",
+            ),
+            SessionSummary(
+                id = "s2",
+                cwd = "/work/other",
+                projectRoot = "/work/other",
+                projectKey = "/work/other",
+            ),
+        )
+
+        val projects = withWorkspaceProjects(emptyList(), sessions)
+
+        assertEquals(listOf("/work/app", "/work/other"), projects.map { it.path })
+    }
+
+    @Test
+    fun `the fallback never duplicates a workspace the server already lists`() {
+        val sessions = listOf(
+            SessionSummary(
+                id = "s1",
+                cwd = "C:\\Work\\App",
+                projectRoot = "C:\\Work\\App",
+                projectKey = "c:\\work\\app",
+            ),
+        )
+
+        val projects = withWorkspaceProjects(listOf(ManagedProject(path = "c:/work/app")), sessions)
+
+        assertEquals(
+            "a casing-only difference is the same workspace",
+            listOf("c:/work/app"),
+            projects.map { it.path },
+        )
+    }
+
+    @Test
     fun `a live session without any directory falls back to the active workspace`() {
         val display = withLivePlaceholders(
             sessions = emptyList(),

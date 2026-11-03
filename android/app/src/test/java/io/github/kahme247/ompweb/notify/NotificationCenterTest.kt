@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.notify
 
 import android.content.Context
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import io.github.kahme247.ompweb.data.SettingsStore
 import io.github.kahme247.ompweb.domain.NotifyAnswer
@@ -8,6 +9,8 @@ import io.github.kahme247.ompweb.domain.NotifyEvent
 import io.github.kahme247.ompweb.domain.NotifyPrefs
 import io.github.kahme247.ompweb.domain.NotifyProject
 import io.github.kahme247.ompweb.domain.NotifyType
+import io.github.kahme247.ompweb.domain.PRESENCE_RETRY_MILLIS
+import io.github.kahme247.ompweb.domain.PRESENCE_TTL_MILLIS
 import io.github.kahme247.ompweb.domain.PresenceReport
 import io.github.kahme247.ompweb.events.EventChannel
 import io.github.kahme247.ompweb.events.EventMux
@@ -38,7 +41,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * A12 at the center: a refused system post and a `toast` frame both land in
@@ -96,6 +102,12 @@ class NotificationCenterTest {
         val projects = mutableMapOf<String, NotifyProject>()
         val presence = mutableListOf<PresenceReport>()
 
+        /** How many presence reports fail (network) before one is delivered. */
+        @Volatile var presenceFailures = 0
+
+        /** Every attempt, delivered or not (the retry budget is observable). */
+        @Volatile var presenceAttempts = 0
+
         override suspend fun putDevice(deviceId: String, prefs: NotifyPrefs, origin: ServerAddress?) = Unit
 
         override suspend fun isSubscribed(deviceId: String): Boolean = false
@@ -103,6 +115,11 @@ class NotificationCenterTest {
         override suspend fun sessionProjects(): Map<String, NotifyProject> = projects
 
         override suspend fun reportPresence(report: PresenceReport) {
+            presenceAttempts++
+            if (presenceFailures > 0) {
+                presenceFailures--
+                throw io.github.kahme247.ompweb.net.ApiError.Network(java.io.IOException("offline"))
+            }
             presence += report
         }
 
@@ -157,6 +174,24 @@ class NotificationCenterTest {
 
     /** [NotificationCenter.deliverFrame] suspends on the project lookup. */
     private fun deliver(frame: JsonObject) = runBlocking { center.deliverFrame(frame) }
+
+    /**
+     * A center whose server advertises `presenceOptional` (and that counts as
+     * signed in), so the background transition report is retried.
+     */
+    private fun presenceOptionalCenter(): NotificationCenter = NotificationCenter(
+        context = context,
+        settings = settings,
+        api = api,
+        mux = EventMux(FakeTransport(), scope),
+        scope = scope,
+        isSignedIn = { true },
+        presenceOptional = MutableStateFlow(true),
+        notifier = notifier,
+        haptics = haptics,
+    )
+
+    private fun idleMain(millis: Long) = shadowOf(Looper.getMainLooper()).idleFor(millis, TimeUnit.MILLISECONDS)
 
     private fun notificationFrame(
         kind: String,
@@ -346,6 +381,108 @@ class NotificationCenterTest {
         val last = requireNotNull(api.presence.lastOrNull())
         assertFalse("no longer on screen", last.visible)
         assertNull("the session is released", last.sessionId)
+    }
+
+    @Test
+    fun `a failed background report is retried until the server has it`() = runBlocking {
+        val center = presenceOptionalCenter()
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+        val before = api.presence.size
+
+        // The one POST that ends the suppression is lost (dead spot).
+        api.presenceFailures = 1
+        center.setAppForeground(false)
+        assertEquals("the failed attempt is not a delivery", before, api.presence.size)
+
+        idleMain(PRESENCE_RETRY_MILLIS + 1_000)
+
+        assertEquals("the retry reached the server", before + 1, api.presence.size)
+        val last = requireNotNull(api.presence.lastOrNull())
+        assertFalse("still not on screen", last.visible)
+        assertNull("the session is released", last.sessionId)
+    }
+
+    @Test
+    fun `the background report is retried again when the retry fails too`() = runBlocking {
+        val center = presenceOptionalCenter()
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+        val before = api.presence.size
+
+        api.presenceFailures = 2
+        center.setAppForeground(false)
+        idleMain(PRESENCE_RETRY_MILLIS + 1_000)
+        assertEquals("the first retry failed as well", before, api.presence.size)
+
+        idleMain(PRESENCE_RETRY_MILLIS + 1_000)
+        assertEquals("the second retry got through", before + 1, api.presence.size)
+    }
+
+    @Test
+    fun `returning to the foreground ends the background retry`() = runBlocking {
+        val center = presenceOptionalCenter()
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+        val before = api.presence.size
+
+        api.presenceFailures = 5
+        center.setAppForeground(false)
+        idleMain(PRESENCE_RETRY_MILLIS + 1_000)
+
+        // Back in the app: the transition report is superseded, nothing stale
+        // may be posted after it (the visible report itself is a normal send).
+        api.presenceFailures = 0
+        center.setAppForeground(true)
+        val afterForeground = api.presence.size
+        assertTrue("the foreground report is visible", api.presence.last().visible)
+
+        idleMain(PRESENCE_RETRY_MILLIS * 5)
+        assertEquals("the cancelled retry never reports again", afterForeground, api.presence.size)
+        assertEquals("the app is still reported visible", true, api.presence.last().visible)
+        assertTrue("at least the foreground report was sent", afterForeground > before)
+    }
+
+    @Test
+    fun `an offline background report stops retrying at the presence TTL`() = runBlocking {
+        val center = presenceOptionalCenter()
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+
+        // Nothing gets through for minutes: the entry the report would repair
+        // expires on its own after the TTL, so the radio must not keep waking
+        // for it forever.
+        api.presenceFailures = Int.MAX_VALUE
+        val deliveredBefore = api.presence.size
+        val before = api.presenceAttempts
+        center.setAppForeground(false)
+        idleMain(PRESENCE_RETRY_MILLIS * 10)
+
+        val attempts = api.presenceAttempts - before
+        val budget = (PRESENCE_TTL_MILLIS / PRESENCE_RETRY_MILLIS).toInt()
+        assertTrue("bounded retries, saw $attempts", attempts <= budget)
+        assertTrue("the transition was attempted at least once", attempts >= 1)
+        assertEquals("no report slipped through", deliveredBefore, api.presence.size)
+    }
+
+    @Test
+    fun `a server without the capability keeps the plain keep-alive report`() = runBlocking {
+        // `center` has no `presenceOptional`: the 45 s beat (with its own 10 s
+        // retry) repairs a lost report, so no transition retry is added.
+        settings.ensureNotifyIdentity()
+        center.setAppForeground(true)
+        center.setVisibleSession("s1")
+        val before = api.presence.size
+
+        api.presenceFailures = 1
+        center.setAppForeground(false)
+        idleMain(PRESENCE_RETRY_MILLIS * 5)
+
+        assertEquals("no capability, no extra report", before, api.presence.size)
     }
 
     @Test

@@ -61,13 +61,21 @@ sealed interface EventChannel {
     /**
      * Server-routed notifications for one device identity (`clientId`), which
      * the notification service keeps open in the background.
+     *
+     * [deviceId] names the device the stream belongs to, exactly like the
+     * `PUT /api/notifications/devices` identity. A stream without a live
+     * presence entry is reachable but not visible, and the server routes such
+     * a stream through *its own* device preferences (an in-page delivery only
+     * while no push subscription covers the device) — without the id it could
+     * only guess which device's prefs apply.
      */
-    data class Notifications(val clientId: String) : EventChannel {
-        override val key: String = "notifications:$clientId"
+    data class Notifications(val clientId: String, val deviceId: String) : EventChannel {
+        override val key: String = "notifications:$clientId|$deviceId"
 
         override fun toJson(): JsonObject = buildJsonObject {
             put("kind", "notifications")
             put("clientId", clientId)
+            put("deviceId", deviceId)
         }
     }
 }

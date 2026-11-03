@@ -179,6 +179,32 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `a burst of range taps asks for the settled selection once`() {
+        routes["/api/usage"] = { _, _ -> json(usageJson(points = 3)) }
+
+        // Two taps on the segmented control: the first selection is superseded
+        // before it is fetched. Each intermediate scan would be queued behind
+        // the other on the server (it serialises usage reports).
+        viewModel.setUsageRange(UsageTimeRange.SEVEN_DAYS)
+        viewModel.setUsageRange(UsageTimeRange.NINETY_DAYS)
+
+        waitFor("the settled report") {
+            viewModel.usageState.value.report != null && !viewModel.usageState.value.loading
+        }
+        assertEquals("range", UsageTimeRange.NINETY_DAYS, viewModel.usageState.value.range)
+        assertEquals(
+            "only the settled selection is scanned",
+            1,
+            paths.count { it.startsWith("/api/usage") && it.contains("range=90d") },
+        )
+        assertEquals(
+            "the superseded selection is never scanned",
+            0,
+            paths.count { it.startsWith("/api/usage") && it.contains("range=7d") },
+        )
+    }
+
+    @Test
     fun `a new report drops a selection that no longer exists`() {
         routes["/api/usage"] = { _, _ -> json(usageJson(points = 3)) }
         viewModel.loadUsage()

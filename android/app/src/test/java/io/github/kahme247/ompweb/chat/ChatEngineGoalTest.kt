@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -29,8 +30,13 @@ class ChatEngineGoalTest {
         """.trimIndent(),
     )
 
+    /**
+     * omp's `get_state` carries the `GoalModeState` (`{enabled, mode, goal}`)
+     * from `getGoalModeState()`, not the `GoalInfo` itself.
+     */
     private fun getState(goal: String?): JsonObject = obj(
-        """{"running":false,"state":{"isStreaming":false,"isPromptRunning":false,"goal":$goal}}""",
+        """{"running":false,"state":{"isStreaming":false,"isPromptRunning":false,
+           "goal":{"enabled":true,"mode":"active","goal":$goal}}}""",
     )
 
     @Test
@@ -141,6 +147,58 @@ class ChatEngineGoalTest {
 
         engine.applyGoalResponse(obj("""{"goal":null,"state":null}"""))
         engine.flush()
+        assertNull(engine.state.value.goal)
+    }
+
+    @Test
+    fun `a budget-limited goal stays visible as its own state`() {
+        val engine = engine()
+
+        engine.applyAgentState(
+            getState(
+                """{"id":"g1","objective":"ship it","status":"budget-limited",
+                    "tokenBudget":5000,"tokensUsed":5000}""",
+            ),
+        )
+        engine.flush()
+
+        val goal = engine.state.value.goal!!
+        assertEquals("budget-limited", goal.status)
+        assertTrue(goal.budgetLimited)
+        assertFalse(goal.paused)
+    }
+
+    @Test
+    fun `a flat goal object is still accepted as the older shape`() {
+        val engine = engine()
+
+        engine.applyAgentState(
+            obj(
+                """{"running":false,"state":{"isStreaming":false,"isPromptRunning":false,
+                    "goal":{"id":"g1","objective":"ship it","status":"active"}}}""",
+            ),
+        )
+        engine.flush()
+
+        assertEquals("ship it", engine.state.value.goal!!.objective)
+    }
+
+    @Test
+    fun `a disabled goal mode clears the banner`() {
+        val engine = engine()
+
+        engine.applyAgentState(
+            getState("""{"id":"g1","objective":"ship it","status":"active"}"""),
+        )
+        engine.flush()
+        engine.applyAgentState(
+            obj(
+                """{"running":false,"state":{"isStreaming":false,"isPromptRunning":false,
+                    "goal":{"enabled":false,"mode":"idle","goal":null}}}""",
+            ),
+        )
+        engine.flush()
+
         assertNull(engine.state.value.goal)
     }
 }

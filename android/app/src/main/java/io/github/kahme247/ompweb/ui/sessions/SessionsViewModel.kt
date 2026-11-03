@@ -280,6 +280,14 @@ class SessionsViewModel(
      * return. The running channel itself is tiny, so it stays subscribed.
      */
     private var foreground = true
+
+    /**
+     * The list pane is on screen. `sessions-changed` arrives for every write of
+     * a running session's file, and with a chat open (or a phone's detail pane
+     * expanded) nobody reads the list: those reloads only cost data. Deferred
+     * ones run once when the list is visible again.
+     */
+    private var listVisible = true
     private var staleReload = false
     private val retryTicks = MutableStateFlow(0)
     private var loadJob: Job? = null
@@ -413,20 +421,39 @@ class SessionsViewModel(
     }
 
     /**
+     * The list pane is shown (`ListDetailPaneScaffoldRole.List` is not
+     * `Hidden`): on a phone an open chat hides it, on a tablet both panes stay.
+     * A `sessions-changed` frame while it is hidden only marks the list stale,
+     * so a running agent does not re-download the 130 KB list for a reader who
+     * is looking at the transcript.
+     */
+    fun setListVisible(visible: Boolean) {
+        if (listVisible == visible) return
+        listVisible = visible
+        resumeDeferredReload()
+    }
+
+    /**
      * The activity started or stopped. Leaving the foreground drops a pending
      * debounced reload and defers every later one; coming back reloads once if
-     * anything changed while the app was away.
+     * anything changed while the app was away (or while a chat covered the
+     * list).
      */
     fun setForeground(foreground: Boolean) {
         this.foreground = foreground
         if (foreground) {
-            if (!staleReload) return
-            staleReload = false
-            scheduleReload()
+            resumeDeferredReload()
             return
         }
         delayedLoadJob?.cancel()
         delayedLoadJob = null
+    }
+
+    /** Runs the one deferred reload, now that a reader can see the list again. */
+    private fun resumeDeferredReload() {
+        if (!foreground || !listVisible || !staleReload) return
+        staleReload = false
+        scheduleReload()
     }
 
     fun refresh() {
@@ -860,11 +887,10 @@ class SessionsViewModel(
 
     /** Session files change in bursts; one reload per burst is enough. */
     private fun scheduleReload() {
-        if (!foreground) {
-            // Behind the lock screen the list would reload (list + projects +
-            // home) on every session-file write of a running agent, without
-            // anyone reading it. One reload on return is enough — and it is
-            // still debounced.
+        if (!foreground || !listVisible) {
+            // Nobody reads the list right now: behind the lock screen, or the
+            // detail pane covers it. One reload when it is visible again is
+            // enough — and it is still debounced.
             staleReload = true
             return
         }
@@ -1150,7 +1176,9 @@ class SessionsViewModel(
         var attempt = 0
         while (true) {
             val result = captureApi {
-                if (fresh) api.sessionDetailFresh(id) else api.sessionDetail(id)
+                // The dialog needs the header, the tree and `info`'s model/
+                // thinking level — not the transcript the chat loads separately.
+                if (fresh) api.sessionDetailFresh(id, meta = true) else api.sessionDetail(id, meta = true)
             }
             val succeeded = result.isSuccess
             if (generation != detailGeneration) return
@@ -1195,11 +1223,12 @@ class SessionsViewModel(
             _state.update { it.copy(detailLoading = false, detailError = SessionsLoadError.Server(500)) }
             return
         }
-        val model = detail.context?.model?.let { current ->
-            listOfNotNull(current.provider.takeIf { it.isNotBlank() }, current.modelId.takeIf { it.isNotBlank() })
-                .joinToString("/")
-                .takeIf { it.isNotEmpty() }
-        }
+        // The meta shape carries the session file's model and thinking level in
+        // `info`; an older server ignores `meta` and reports them under
+        // `context`, which is still decoded here as the fallback.
+        val model = info.model?.qualifiedId() ?: detail.context?.model?.qualifiedId()
+        val thinkingLevel = info.thinkingLevel?.takeIf { it.isNotBlank() }
+            ?: detail.context?.thinkingLevel
         _state.update {
             it.copy(
                 detailLoading = false,
@@ -1207,7 +1236,7 @@ class SessionsViewModel(
                 detail = SessionDetailView(
                     info = info,
                     model = model,
-                    thinkingLevel = detail.context?.thinkingLevel,
+                    thinkingLevel = thinkingLevel,
                 ),
                 activeCwd = info.projectKey ?: it.activeCwd,
             )
@@ -1351,11 +1380,18 @@ class SessionsViewModel(
         }
     }
 
-    /** Copy-transcript payload; `null` after a failure (notice already shown). */
+    /**
+     * Copy-transcript payload; `null` after a failure (notice already shown).
+     *
+     * This is the one caller that needs the messages, so it asks for the full
+     * shape: `?meta=1` omits `context` entirely (the transcript is what the
+     * whole request exists for here). The title and the cwd still come from
+     * the answer's `info`, or from the list row when the server omits them.
+     */
     suspend fun transcriptMarkdown(id: String): String? {
         val summary = _state.value.sessions.firstOrNull { it.id == id }
         return try {
-            val detail = api.sessionDetail(id)
+            val detail = api.sessionDetail(id, meta = false)
             val info = detail.info
             transcriptToMarkdown(
                 messages = detail.context?.messages ?: emptyList(),

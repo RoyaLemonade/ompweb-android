@@ -143,7 +143,7 @@ class FakeComposerApi : ComposerControlsApi {
         return modelsResponse
     }
 
-    override suspend fun agentState(sessionId: String): JsonObject =
+    override suspend fun agentState(sessionId: String, systemPrompt: Boolean): JsonObject =
         buildJsonObject { }
 
     override suspend fun agentCommand(

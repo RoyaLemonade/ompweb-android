@@ -21,6 +21,7 @@ import io.github.kahme247.ompweb.net.ApiError
 import io.github.kahme247.ompweb.net.BashOutputResult
 import io.github.kahme247.ompweb.net.BtwApi
 import io.github.kahme247.ompweb.net.ChatApi
+import io.github.kahme247.ompweb.net.ContextRawResponse
 import io.github.kahme247.ompweb.net.CwdValidation
 import io.github.kahme247.ompweb.net.ElsewhereSession
 import io.github.kahme247.ompweb.net.ExtensionApi
@@ -301,6 +302,18 @@ class ChatViewModelTest {
         assertTrue(vm.ui.value.engine.historyLoaded)
     }
 
+    @Test
+    fun openingASessionAsksForTheMetadataHeaderNotTheTranscript() = chatTest {
+        api.contextPage = page("s1", listOf(USER_HELLO, ASSISTANT_HI))
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+
+        // The branch tree and the leaf come from the cheap `?meta=1` answer;
+        // the transcript is the one `/context` request (above).
+        assertEquals("the chat never asks for the full detail body", listOf(true), api.detailMetaRequests)
+    }
+
     // --------------------------------------------------------- cache-first
 
     private val origin = ServerAddress("http", "omp.local", 30177)
@@ -529,6 +542,41 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun anUnchangedTranscriptRevalidatesWithTheCachedEtag() = chatTest {
+        val cache = MemoryTranscriptCache()
+        cache.write(origin.origin, "s1", null, false, cachedBody(), "\"etag-1\"")
+        api.contextEtag = "\"etag-1\""
+        api.contextNotModified = true
+        createViewModel(settingsOverride = originSettings(), transcripts = cache)
+
+        vm.open("s1", null)
+        runCurrent()
+
+        assertEquals("the cached answer's validator goes out", listOf("\"etag-1\""), api.contextConditionalEtags)
+        assertEquals("the 304 body is the cached transcript", 3, vm.ui.value.engine.messages.size)
+        assertTrue(vm.ui.value.engine.historyLoaded)
+        assertEquals("a 304 does not rewrite the multi-megabyte body", 1, cache.writes.size)
+        assertEquals("nothing was re-downloaded", 0, api.contextFullCalls)
+    }
+
+    @Test
+    fun aNotModifiedAnswerWithoutACachedBodyIsRefetched() = chatTest {
+        val cache = MemoryTranscriptCache()
+        cache.write(origin.origin, "s1", null, false, "", "\"etag-1\"")
+        api.contextNotModified = true
+        api.contextPage = page("s1", listOf(USER_HELLO, ASSISTANT_HI))
+        createViewModel(settingsOverride = originSettings(), transcripts = cache)
+
+        vm.open("s1", null)
+        runCurrent()
+
+        assertEquals("the validator still went out", listOf("\"etag-1\""), api.contextConditionalEtags)
+        assertEquals("the body is refetched without the header", 1, api.contextFullCalls)
+        assertEquals(2, vm.ui.value.engine.messages.size)
+        assertTrue(vm.ui.value.engine.historyLoaded)
+    }
+
+    @Test
     fun aCachedTranscriptIsNotPaintedWithoutAConfiguredOrigin() = chatTest {
         val cache = MemoryTranscriptCache()
         cache.write(origin.origin, "s1", null, false, cachedBody())
@@ -703,7 +751,7 @@ class ChatViewModelTest {
         // The next *periodic* poll answers: the run settles normally. The
         // post-send settlement loop deliberately stopped on the slow read (a
         // blocked child is alive, not a missed start, and polling it every
-        // 600 ms buys nothing) — the 15 s reconcile poll is what retries.
+        // 600 ms buys nothing) — the 30 s reconcile poll is what retries.
         api.agentStateFailure = null
         api.contextPage = page("s1", listOf(USER_HELLO))
         advanceTimeBy(RECONCILE_MILLIS + 1)
@@ -912,7 +960,7 @@ class ChatViewModelTest {
 
         // omp drains its event loop: the periodic poll settles the run silently.
         api.agentStateFailure = null
-        advanceTimeBy(15_001)
+        advanceTimeBy(RECONCILE_MILLIS + 1)
         runCurrent()
         assertFalse("the poll settles the run once omp answers", vm.ui.value.engine.busy)
         assertTrue(vm.ui.value.engine.liveStateKnown)
@@ -2841,6 +2889,61 @@ class ChatViewModelTest {
         assertNull("a dropped goal leaves the banner", vm.ui.value.engine.goal)
     }
 
+    @Test
+    fun aGoalControlReplyForTheOldSessionIsDropped() = chatTest {
+        api.goalGate = CompletableDeferred()
+        api.goalReply = parse(
+            """{"goal":{"id":"g1","objective":"ship it","status":"paused"},
+                "state":{"enabled":true,"mode":"active"}}""",
+        )
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+        emit(
+            """
+            {"type":"goal_updated","goal":{"id":"g1","objective":"ship it","status":"active"},
+             "state":{"enabled":true,"mode":"active"}}
+            """.trimIndent(),
+        )
+
+        vm.pauseGoal()
+        runCurrent()
+        vm.open("s2", null)
+        runCurrent()
+        api.goalGate!!.complete(Unit)
+        runCurrent()
+
+        assertNull(
+            "the pause answer belongs to s1 and must not paint the new chat",
+            vm.ui.value.engine.goal,
+        )
+    }
+
+    @Test
+    fun aGoalCreateReplyForTheOldSessionIsDropped() = chatTest {
+        api.goalGate = CompletableDeferred()
+        api.goalReply = parse(
+            """{"goal":{"id":"g1","objective":"ship it","status":"active"},
+                "state":{"enabled":true,"mode":"active"}}""",
+        )
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+
+        vm.composer.setText("/goal ship it")
+        vm.submit()
+        runCurrent()
+        vm.open("s2", null)
+        runCurrent()
+        api.goalGate!!.complete(Unit)
+        runCurrent()
+
+        assertNull(
+            "the create answer belongs to s1 and must not paint the new chat",
+            vm.ui.value.engine.goal,
+        )
+    }
+
     private class FakeApi : ChatApi {
         var contextPage: JsonObject = page("s1", emptyList())
         var promptFailure: Exception? = null
@@ -2870,6 +2973,8 @@ class ChatViewModelTest {
         val goalCalls = mutableListOf<Triple<String, String, String?>>()
         var goalFailure: Exception? = null
         var goalReply: JsonElement? = null
+        /** Holds every `goal` RPC until the test releases it (session-switch fence). */
+        var goalGate: CompletableDeferred<Unit>? = null
         /** `?force=1` of every prompt, in order (the copy override). */
         val promptForces = mutableListOf<Boolean>()
         val steers = mutableListOf<Pair<String, String>>()
@@ -2916,11 +3021,12 @@ class ChatViewModelTest {
             tokenBudget: Long?,
         ): JsonElement? {
             goalCalls += Triple(sessionId, op, objective)
+            goalGate?.await()
             goalFailure?.let { throw it }
             return goalReply
         }
 
-        override suspend fun agentState(sessionId: String): JsonObject {
+        override suspend fun agentState(sessionId: String, systemPrompt: Boolean): JsonObject {
             agentStateCalls++
             agentStateSessions += sessionId
             try {
@@ -2977,7 +3083,35 @@ class ChatViewModelTest {
             return contextPage
         }
 
-        override suspend fun sessionDetail(id: String): SessionDetail = SessionDetail(sessionId = id)
+        /** Validator the fake's full context answers carry. */
+        var contextEtag: String? = null
+
+        /** Forces the `304` answer a revalidating server sends. */
+        var contextNotModified = false
+
+        /** `If-None-Match` of every conditional request, in order. */
+        val contextConditionalEtags = mutableListOf<String?>()
+
+        override suspend fun contextFullConditional(
+            sessionId: String,
+            leafId: String?,
+            includePreCompaction: Boolean,
+            deferThinking: Boolean,
+            deferMedia: Boolean,
+            etag: String?,
+        ): ContextRawResponse {
+            contextConditionalEtags += etag
+            if (contextNotModified) return ContextRawResponse(body = null, etag = etag ?: contextEtag)
+            val body = contextFull(sessionId, leafId, includePreCompaction, deferThinking, deferMedia).toString()
+            return ContextRawResponse(body = body, etag = contextEtag)
+        }
+
+        val detailMetaRequests = mutableListOf<Boolean>()
+
+        override suspend fun sessionDetail(id: String, meta: Boolean): SessionDetail {
+            detailMetaRequests += meta
+            return SessionDetail(sessionId = id)
+        }
 
         override suspend fun githubRepo(cwd: String): String? = null
 
@@ -3186,7 +3320,7 @@ class ChatViewModelTest {
             "This server does not support goal mode yet — sent as a prompt."
         const val LIVE_STATE_SUBMIT_TIMEOUT = 10_000L
         const val STOP_UNCONFIRMED = "Stop not confirmed yet — omp is busy."
-        const val RECONCILE_MILLIS = 15_000L
+        const val RECONCILE_MILLIS = 30_000L
         const val USER_HELLO =
             """{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1000,"attribution":"user"}"""
         const val USER_FIRST =

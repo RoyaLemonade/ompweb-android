@@ -376,6 +376,11 @@ fun SessionsScreen(
         .value
         .isAtLeast(Lifecycle.State.STARTED)
     LaunchedEffect(viewModel, processStarted) { viewModel.setForeground(processStarted) }
+    // Same rule for the list pane: with a chat open on a phone the list is
+    // hidden, and re-downloading 130 KB per session-file write costs data for
+    // an answer nobody sees. The deferred reload runs on return (P2).
+    val listVisible = navigator.scaffoldValue[ListDetailPaneScaffoldRole.List] != PaneAdaptedValue.Hidden
+    LaunchedEffect(viewModel, listVisible) { viewModel.setListVisible(listVisible) }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
     LaunchedEffect(navigator) {
         if (navigator.currentDestination == null) {
@@ -1216,8 +1221,18 @@ internal fun SessionListPane(
         )
     }
     val displaySessions = display.sessions
-    val displayProjects = remember(state.projects, display) {
-        withPlaceholderProjects(state.projects, display)
+    val displayProjects = remember(state.projects, display, state.projectsLoaded, state.projectsError) {
+        val base = withPlaceholderProjects(state.projects, display)
+        // The project list is the only authority on which projects are hidden.
+        // Until it answers (or when it failed), rows are derived from the
+        // sessions: without that, `groupSessionsByProject` drops every session
+        // and the list shows "No sessions" while sessions exist. A successful
+        // answer — even an empty one — is respected as it is.
+        if (state.projectsError != null || !state.projectsLoaded) {
+            withWorkspaceProjects(base, display.sessions)
+        } else {
+            base
+        }
     }
     val allGrouped = remember(displayProjects, displaySessions) {
         groupSessionsByProject(displayProjects, displaySessions)
@@ -1613,7 +1628,13 @@ internal fun SessionListPane(
                             error = error,
                             onRetry = onRefresh,
                         )
-    
+
+                        // The empty state is a statement about the server's
+                        // answer: it may only appear once `/api/projects`
+                        // actually answered (an empty answer can also mean
+                        // "every project is hidden").
+                        !state.projectsLoaded && displayProjects.isEmpty() -> LoadingSessions()
+
                         displayProjects.isEmpty() && visibleSessions.isEmpty() -> EmptySessions(
                             onAddProject = onAddProject,
                             // Web's getting-started button opens the add-project

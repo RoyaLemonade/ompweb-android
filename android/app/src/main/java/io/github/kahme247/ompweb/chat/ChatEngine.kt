@@ -11,7 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import io.github.kahme247.ompweb.domain.SUBAGENT_ACTIVITY_BUFFER_MAX
 import io.github.kahme247.ompweb.net.ElsewhereSession
 import io.github.kahme247.ompweb.domain.SkillDiagnosticsSnapshot
-import io.github.kahme247.ompweb.domain.parseGoal
+import io.github.kahme247.ompweb.domain.parseGoalSnapshot
 import io.github.kahme247.ompweb.domain.SubagentAgentSource
 import io.github.kahme247.ompweb.domain.SubagentInfo
 import io.github.kahme247.ompweb.domain.SubagentSource
@@ -573,8 +573,10 @@ class ChatEngine(
         val todoPhases = state["todoPhases"]?.let(::parseTodoPhases)
         // A snapshot without `goal` (older omp) keeps what is known; an
         // explicit null is omp saying the goal was completed or dropped.
+        // omp wraps the goal in its `GoalModeState` (`{enabled, mode, goal}`),
+        // so `state["goal"]` is not the `GoalInfo` itself.
         val hasGoalField = state.containsKey("goal")
-        val goal = if (hasGoalField) visibleGoal(parseGoal(state["goal"])) else null
+        val goal = if (hasGoalField) visibleGoal(parseGoalSnapshot(state["goal"])) else null
         // The foreign owner is top-level and always present on a server that
         // knows it; an absent field (older server) keeps whatever is known.
         val elsewhere = if (root.containsKey("elsewhere")) {
@@ -623,11 +625,12 @@ class ChatEngine(
 
     /**
      * Apply a `goal_updated` payload or the `{goal, state}` data of a `goal`
-     * RPC reply. Dropped/completed goals become null; a paused goal stays
-     * visible so the banner can offer Resume.
+     * RPC reply. Dropped/completed goals become null; a paused or
+     * budget-limited goal stays visible so the banner can offer Resume/Drop.
+     * Both the flat `GoalInfo` and omp's `GoalModeState` wrapper are accepted.
      */
     fun applyGoal(element: JsonElement?) {
-        val goal = visibleGoal(parseGoal(element))
+        val goal = visibleGoal(parseGoalSnapshot(element))
         _state.update { if (it.goal == goal) it else it.copy(goal = goal) }
     }
 

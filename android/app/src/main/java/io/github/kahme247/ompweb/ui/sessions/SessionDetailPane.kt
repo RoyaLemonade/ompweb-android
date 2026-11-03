@@ -367,7 +367,13 @@ private fun SessionDetailsDialog(
     val colors = LocalOmpColors.current
     // "Updated" means the newest message, not the session file's mtime: opening
     // a chat makes omp rewrite its file without a message (session_exit).
-    val lastUsedAt = info?.id?.let { state.knownActivity[it] }
+    // Newest message: the server's `lastMessageAt` when it reports one, the
+    // local memo when that is newer or the server has no such field.
+    val lastUsedAt = info?.let { detail ->
+        val serverAt = detail.lastMessageAt?.let { parseSessionTimestamp(it)?.toEpochMilli() }
+        val knownAt = state.knownActivity[detail.id]
+        listOfNotNull(serverAt, knownAt).maxOrNull()
+    }
     val title = info?.name?.takeIf { it.isNotBlank() }
         ?: summary?.title()
         ?: stringResource(R.string.session_untitled)
