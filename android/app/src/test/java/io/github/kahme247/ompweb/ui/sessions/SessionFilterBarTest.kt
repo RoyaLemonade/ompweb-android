@@ -75,9 +75,9 @@ class SessionFilterBarTest {
         setContent(state = state(), onAgeFilterChange = { selected = it })
 
         composeRule.onNodeWithTag(SESSION_FILTER_AGE_TAG).performClick()
-        composeRule.onNodeWithText(context.getString(R.string.sessions_filter_age_two_days)).performClick()
+        composeRule.onNodeWithText(context.getString(R.string.sessions_filter_age_48_hours)).performClick()
 
-        assertEquals(SessionAgeFilter.TwoDays, selected)
+        assertEquals(SessionAgeFilter.Last48Hours, selected)
     }
 
     @Test

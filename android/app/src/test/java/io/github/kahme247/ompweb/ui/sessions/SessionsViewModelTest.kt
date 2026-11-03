@@ -1162,7 +1162,7 @@ class SessionsViewModelTest {
             SettingsSnapshot(
                 loaded = true,
                 sessionFiltersByOrigin = mapOf(
-                    address.origin to SessionListFilter(unreadOnly = true, age = SessionAgeFilter.TwoDays),
+                    address.origin to SessionListFilter(unreadOnly = true, age = SessionAgeFilter.Last48Hours),
                     "http://other.invalid:1" to SessionListFilter(runningOnly = true),
                 ),
             ),
@@ -1173,7 +1173,7 @@ class SessionsViewModelTest {
         recreate(preferences)
         viewModel.setActive(true)
         waitFor("this origin's filters seeded") {
-            viewModel.state.value.unreadOnly && viewModel.state.value.ageFilter == SessionAgeFilter.TwoDays
+            viewModel.state.value.unreadOnly && viewModel.state.value.ageFilter == SessionAgeFilter.Last48Hours
         }
         assertEquals(
             "another origin's Running chip must not leak",

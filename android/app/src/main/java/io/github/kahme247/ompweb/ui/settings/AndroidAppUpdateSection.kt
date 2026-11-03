@@ -40,6 +40,8 @@ import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
 internal fun AndroidAppUpdateCard(
     controller: AndroidUpdateController,
     appVersion: String,
+    /** Set when the category list's update shortcut jumps to this card. */
+    highlighted: Boolean = false,
 ) {
     val update by controller.state.collectAsStateWithLifecycle()
     LifecycleResumeEffect(controller) {
@@ -53,14 +55,17 @@ internal fun AndroidAppUpdateCard(
     var useCustom by rememberSaveable(update.feedUrl) { mutableStateOf(update.feedUrl != null) }
     var customUrl by rememberSaveable(update.feedUrl) { mutableStateOf(update.feedUrl.orEmpty()) }
     var feedError by remember { mutableStateOf<String?>(null) }
-    val notice = update.notice
+    // The banner may be dismissed; the card still has to offer the action for
+    // the announced version.
+    val available = update.available
+    val bannerNotice = update.notice
     val latest = update.latest
     val busy = update.install is AndroidUpdateInstallState.Downloading ||
         update.install == AndroidUpdateInstallState.Verifying ||
         update.install == AndroidUpdateInstallState.Installing ||
         update.install == AndroidUpdateInstallState.AwaitingConfirmation
 
-    SettingsCard(highlighted = false) {
+    SettingsCard(highlighted = highlighted) {
         SettingsSectionTitle(stringResource(R.string.system_android_update_title))
         Text(
             text = stringResource(R.string.system_android_update_installed, appVersion),
@@ -190,7 +195,7 @@ internal fun AndroidAppUpdateCard(
                 }
                 // commit() handed the APK to Android; "Install" would do nothing.
                 busy -> Unit
-                notice != null && notice.installable -> {
+                available != null && available.installable -> {
                     Button(onClick = controller::install) {
                         Text(
                             stringResource(
@@ -210,13 +215,15 @@ internal fun AndroidAppUpdateCard(
             ) {
                 Text(stringResource(R.string.system_android_update_check))
             }
-            if (!busy && notice?.releaseUrl != null) {
-                TextButton(onClick = { openExternalUrl(context, notice.releaseUrl) }) {
+            if (!busy && available?.releaseUrl != null) {
+                TextButton(onClick = { openExternalUrl(context, available.releaseUrl) }) {
                     Text(stringResource(R.string.system_android_update_release_page))
                 }
             }
-            if (!busy && notice != null) {
-                TextButton(onClick = { controller.dismiss(notice.availableVersion) }) {
+            // Only offered while it hides something: the banner is visible for
+            // this version. The card itself keeps its action either way.
+            if (!busy && bannerNotice != null) {
+                TextButton(onClick = { controller.dismiss(bannerNotice.availableVersion) }) {
                     Text(stringResource(R.string.system_android_update_dismiss))
                 }
             }

@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.ui.settings
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,7 +48,9 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelStoreOwner
@@ -55,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.kahme247.ompweb.AppContainer
 import io.github.kahme247.ompweb.R
+import io.github.kahme247.ompweb.domain.AndroidUpdateNotice
 import io.github.kahme247.ompweb.domain.LOCAL_SETTINGS_SEARCH_ENTRIES
 import io.github.kahme247.ompweb.domain.NativeCategory
 import io.github.kahme247.ompweb.domain.SETTINGS_CATEGORIES
@@ -96,6 +100,12 @@ fun SettingsScreen(
 ) {
     val snapshot by container.settings.snapshot.collectAsStateWithLifecycle()
     val voices by container.speech.voices.collectAsStateWithLifecycle()
+    // The category list's shortcut is driven by the announcement, not by the
+    // banner: a dismissed banner must not hide the way to the install action.
+    // Without an APK there is nothing to install, so the card alone announces
+    // the release page.
+    val androidUpdateState by container.androidUpdates.state.collectAsStateWithLifecycle()
+    val availableAppUpdate = androidUpdateState.available?.takeIf { it.installable }
     val viewModel: SettingsViewModel = viewModel(
         viewModelStoreOwner = viewModelStoreOwner,
         factory = container.settingsViewModelFactory,
@@ -183,6 +193,14 @@ fun SettingsScreen(
                             onSelect = { tab ->
                                 selectedWire = tab.wire
                                 highlightId = null
+                                searchQuery = ""
+                            },
+                            update = availableAppUpdate,
+                            onOpenUpdate = {
+                                // The card carries the action (including the
+                                // mobile-data and permission questions).
+                                selectedWire = SettingsTab.SYSTEM.wire
+                                highlightId = "system-android-update"
                                 searchQuery = ""
                             },
                             usageBar = {
@@ -346,6 +364,67 @@ private fun SettingsSearchField(
     )
 }
 
+/**
+ * The category list's update shortcut: one compact row above the tabs while an
+ * app update waits. It is the way back to the install action after the shell
+ * banner was dismissed, so it is driven by the announcement and not by the
+ * banner's state; tapping it opens the card in System & Updates, where the
+ * install (and its mobile-data/permission questions) lives.
+ */
+@Composable
+private fun SettingsUpdateShortcut(
+    update: AndroidUpdateNotice,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalOmpColors.current
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag(SETTINGS_UPDATE_SHORTCUT_TAG)
+            .clickable(role = Role.Button, onClick = onClick),
+        color = colors.panel,
+        border = BorderStroke(1.dp, colors.accent),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_update_shortcut_title),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.text,
+                )
+                Text(
+                    text = stringResource(
+                        R.string.android_update_banner_version,
+                        update.currentVersion,
+                        update.availableVersion,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textMuted,
+                )
+            }
+            Text(
+                text = stringResource(R.string.settings_update_shortcut_action),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.accent,
+            )
+        }
+    }
+}
+
+/** Test tag of the category list's update shortcut. */
+internal const val SETTINGS_UPDATE_SHORTCUT_TAG: String = "settings-update-shortcut"
+
 @Composable
 internal fun SettingsNavigation(
     modifier: Modifier,
@@ -354,6 +433,10 @@ internal fun SettingsNavigation(
     query: String,
     onQueryChange: (String) -> Unit,
     onSelect: (SettingsTab) -> Unit,
+    /** An announced app update; shown as the first row of the category list. */
+    update: AndroidUpdateNotice? = null,
+    /** Opens the update card (System & Updates) — the card carries the action. */
+    onOpenUpdate: () -> Unit = {},
     /** Provider usage strip, pinned at the bottom (web `SettingsNavigation`). */
     usageBar: @Composable () -> Unit = {},
 ) {
@@ -381,6 +464,9 @@ internal fun SettingsNavigation(
         modifier = modifier.background(colors.panel).padding(horizontal = 12.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        if (update != null) {
+            SettingsUpdateShortcut(update = update, onClick = onOpenUpdate)
+        }
         SettingsSearchField(query = query, onQueryChange = onQueryChange)
         Column(
             modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),

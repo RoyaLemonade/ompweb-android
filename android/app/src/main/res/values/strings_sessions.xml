@@ -43,8 +43,8 @@
     <string name="sessions_filter_unread">Unread</string>
     <string name="sessions_filter_age_chip">Age: %1$s</string>
     <string name="sessions_filter_age_all">All</string>
-    <string name="sessions_filter_age_today">Today</string>
-    <string name="sessions_filter_age_two_days">2 days</string>
+    <string name="sessions_filter_age_24_hours">24 h</string>
+    <string name="sessions_filter_age_48_hours">48 h</string>
     <string name="sessions_filter_age_seven_days">7 days</string>
     <string name="sessions_filter_clear">Clear filters</string>
     <plurals name="sessions_filter_hidden">

@@ -51,7 +51,7 @@ class SessionCollapseFilterTest {
 
     @Test
     fun `the Today age filter leaves the project toggle alone`() {
-        assertCollapseSurvives(state(age = SessionAgeFilter.Today))
+        assertCollapseSurvives(state(age = SessionAgeFilter.Last24Hours))
     }
 
     @Test
@@ -169,7 +169,7 @@ class SessionCollapseFilterTest {
         }
         setContent(
             mutableStateOf(
-                state(sessions = sessions, age = SessionAgeFilter.Today),
+                state(sessions = sessions, age = SessionAgeFilter.Last24Hours),
             ),
         )
 

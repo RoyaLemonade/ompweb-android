@@ -1869,8 +1869,8 @@ private fun SessionFilterBar(
 /** Localized label of one age preset (the enum itself stays UI-free). */
 private fun SessionAgeFilter.labelRes(): Int = when (this) {
     SessionAgeFilter.All -> R.string.sessions_filter_age_all
-    SessionAgeFilter.Today -> R.string.sessions_filter_age_today
-    SessionAgeFilter.TwoDays -> R.string.sessions_filter_age_two_days
+    SessionAgeFilter.Last24Hours -> R.string.sessions_filter_age_24_hours
+    SessionAgeFilter.Last48Hours -> R.string.sessions_filter_age_48_hours
     SessionAgeFilter.SevenDays -> R.string.sessions_filter_age_seven_days
 }
 

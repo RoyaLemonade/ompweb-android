@@ -3,6 +3,9 @@
     <!-- Settings shell -->
     <string name="settings_title">Settings</string>
     <string name="settings_search_hint">Search settings</string>
+    <!-- Category list: compact shortcut above the tabs while an app update waits -->
+    <string name="settings_update_shortcut_title">Update available</string>
+    <string name="settings_update_shortcut_action">Install</string>
     <string name="settings_search_results">%1$d results for \"%2$s\"</string>
     <string name="settings_search_no_results">No settings match \"%1$s\"</string>
     <string name="settings_search_section">Section</string>

@@ -79,8 +79,20 @@ data class AndroidUpdateState(
     val feedUrl: String? = null,
     val install: AndroidUpdateInstallState = AndroidUpdateInstallState.Idle,
 ) {
+    /** The shell banner: hidden for the dismissed version, a newer one shows again. */
     val notice: AndroidUpdateNotice?
         get() = androidUpdateNotice(latest, currentVersion, currentVersionCode, dismissedVersion)
+
+    /**
+     * The update the Settings card acts on — the same announcement *without*
+     * the banner's dismissal. The banner is a one-line hint that the user may
+     * put away; Settings is where the update lives, so its install action has
+     * to survive Dismiss (and every install that was canceled or refused
+     * returns to this state). Gating the card on [notice] left "Version X is
+     * available" without a single button after a decline.
+     */
+    val available: AndroidUpdateNotice?
+        get() = androidUpdateNotice(latest, currentVersion, currentVersionCode, dismissedVersion = null)
 }
 
 /**

@@ -3,7 +3,6 @@ package io.github.kahme247.ompweb.domain
 import io.github.kahme247.ompweb.chat.ChatMessage
 import io.github.kahme247.ompweb.net.SessionSummary
 import java.time.Instant
-import java.time.ZoneId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -20,7 +19,6 @@ import org.junit.Test
  */
 class SessionActivityTest {
 
-    private val zone = ZoneId.of("UTC")
     private val now = Instant.parse("2026-03-10T12:00:00Z")
 
     private fun user(at: Long?) = ChatMessage.User(
@@ -127,7 +125,7 @@ class SessionActivityTest {
     }
 
     @Test
-    fun `a chat opened today does not pass the today chip when its last message is a week old`() {
+    fun `a chat opened today does not pass the 24 hour chip when its last message is a week old`() {
         // omp bumped the file when the chat was opened; the last message is old.
         val opened = session("opened", now.toString())
         val lastMessage = now.minusSeconds(7 * 86_400).toEpochMilli()
@@ -137,22 +135,20 @@ class SessionActivityTest {
         assertFalse(
             sessionPassesFilters(
                 projected.single(),
-                SessionListFilter(age = SessionAgeFilter.Today),
+                SessionListFilter(age = SessionAgeFilter.Last24Hours),
                 runningIds = emptySet(),
                 unreadIds = emptySet(),
                 now = now,
-                zone = zone,
             ),
         )
         assertTrue(
             "the untouched server time still passes",
             sessionPassesFilters(
                 session("untouched", now.toString()),
-                SessionListFilter(age = SessionAgeFilter.Today),
+                SessionListFilter(age = SessionAgeFilter.Last24Hours),
                 runningIds = emptySet(),
                 unreadIds = emptySet(),
                 now = now,
-                zone = zone,
             ),
         )
     }

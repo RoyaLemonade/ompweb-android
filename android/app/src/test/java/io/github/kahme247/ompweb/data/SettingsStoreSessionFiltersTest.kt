@@ -40,7 +40,7 @@ class SettingsStoreSessionFiltersTest {
         val store = SettingsStore(context, scope)
         val origin = "http://filters.invalid:30178"
         val other = "http://other.invalid:30178"
-        val unread = SessionListFilter(runningOnly = true, unreadOnly = true, age = SessionAgeFilter.TwoDays)
+        val unread = SessionListFilter(runningOnly = true, unreadOnly = true, age = SessionAgeFilter.Last48Hours)
 
         val initial = withTimeout(20_000) { store.snapshot.first { it.loaded } }
         assertEquals("a fresh install has no filters", emptyMap<String, SessionListFilter>(), initial.sessionFiltersByOrigin)

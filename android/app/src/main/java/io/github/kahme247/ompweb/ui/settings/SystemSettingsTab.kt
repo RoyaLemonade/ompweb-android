@@ -40,9 +40,11 @@ import io.github.kahme247.ompweb.net.WindowsServiceAction
 import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
 
 /**
- * Settings → System & Updates: server settings, the two update cards, the
- * Mobile app card, the Windows service card (only when the server reports
- * Windows), About, and the sign-out/change-server entries.
+ * Settings → System & Updates. The tab leads with the updates (1.0.35): the
+ * Android app update card, then the server's *ompweb update* / *omp update*
+ * notices. Server settings, the Mobile app card, the Windows service card
+ * (only when the server reports Windows), About and the sign-out/change-server
+ * entries follow.
  */
 @Composable
 fun SystemSettingsTab(
@@ -68,6 +70,28 @@ fun SystemSettingsTab(
         title = stringResource(R.string.settings_tab_system),
         modifier = modifier,
     ) {
+        // 1.0.35: the two update surfaces lead the tab. A stale install or a
+        // pending server update is what this tab is usually opened for; the
+        // server settings follow below.
+        if (androidUpdates != null) {
+            item(key = "system-android-update") {
+                AndroidAppUpdateCard(
+                    controller = androidUpdates,
+                    appVersion = appVersion,
+                    highlighted = highlight == "system-android-update",
+                )
+            }
+        }
+
+        item(key = "system-updates") {
+            ServerUpdatesCard(
+                state = state,
+                viewModel = viewModel,
+                highlight = highlight,
+                onConfirmUpdate = { confirmUpdate = it },
+            )
+        }
+
         if (state.message != null) {
             item(key = "system-message") {
                 Row(
@@ -165,143 +189,6 @@ fun SystemSettingsTab(
             }
         }
 
-        item(key = "system-updates") {
-            SettingsCard(
-                highlighted = highlight in setOf(
-                    "system-app-update",
-                    "system-omp-update",
-                    "system-restart-sessions",
-                ),
-            ) {
-                SettingsSectionTitle(stringResource(R.string.system_app_update))
-                val appUpdate = state.appUpdate
-                if (appUpdate == null) {
-                    Text(
-                        stringResource(R.string.system_loading),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = LocalOmpColors.current.textMuted,
-                    )
-                } else {
-                    if (appUpdate.updatesDisabled) {
-                        Text(
-                            stringResource(R.string.system_app_update_disabled),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = LocalOmpColors.current.textMuted,
-                        )
-                    } else {
-                        Text(
-                            text = appUpdate.currentVersion?.let {
-                                stringResource(R.string.system_app_update_current, it)
-                            } ?: "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = LocalOmpColors.current.textMuted,
-                        )
-                        Text(
-                            text = if (appUpdate.updateAvailable) {
-                                stringResource(
-                                    R.string.system_app_update_available,
-                                    appUpdate.availableVersion ?: "",
-                                )
-                            } else {
-                                stringResource(R.string.system_app_update_up_to_date)
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (appUpdate.updateAvailable) {
-                                LocalOmpColors.current.statusWarning
-                            } else {
-                                LocalOmpColors.current.text
-                            },
-                        )
-                        Text(
-                            stringResource(R.string.system_update_command),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = LocalOmpColors.current.textDim,
-                        )
-                        CopyableValue(appUpdate.updateCommand)
-                        if (appUpdate.updateAvailable) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (appUpdate.selfUpdateSupported) {
-                                    Button(
-                                        onClick = { confirmUpdate = UpdateKind.APP },
-                                        enabled = !state.appUpdateRun.busy,
-                                    ) {
-                                        Text(stringResource(R.string.system_app_update_install))
-                                    }
-                                }
-                                TextButton(onClick = viewModel::openReleaseNotes) {
-                                    Text(stringResource(R.string.system_update_notes))
-                                }
-                            }
-                        }
-                    }
-                }
-                UpdateRunStatus(state.appUpdateRun, viewModel = viewModel)
-
-                SettingsDivider()
-                SettingsSectionTitle(stringResource(R.string.system_omp_update))
-                val ompUpdate = state.ompUpdate
-                if (ompUpdate == null) {
-                    Text(
-                        stringResource(R.string.system_omp_unknown),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = LocalOmpColors.current.textMuted,
-                    )
-                } else {
-                    Text(
-                        text = ompUpdate.currentVersion?.let {
-                            stringResource(R.string.system_omp_current, it)
-                        } ?: stringResource(R.string.system_omp_unknown),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = LocalOmpColors.current.textMuted,
-                    )
-                    if (ompUpdate.updateAvailable) {
-                        Text(
-                            stringResource(R.string.system_omp_available, ompUpdate.availableVersion ?: ""),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = LocalOmpColors.current.statusWarning,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { confirmUpdate = UpdateKind.OMP },
-                                enabled = !state.ompUpdateRun.busy,
-                            ) {
-                                Text(stringResource(R.string.system_omp_update_install))
-                            }
-                        }
-                    }
-                    CopyableValue(ompUpdate.updateCommand)
-                }
-                UpdateRunStatus(state.ompUpdateRun, viewModel = viewModel)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { viewModel.checkAppUpdate(force = true) },
-                        enabled = !state.checkingAppUpdate,
-                    ) {
-                        Text(stringResource(R.string.system_check_updates))
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.checkOmpUpdate(force = true) },
-                        enabled = !state.checkingOmpUpdate,
-                    ) {
-                        Text(stringResource(R.string.system_omp_update))
-                    }
-                }
-                SettingsDivider()
-                SettingsRow(
-                    title = stringResource(R.string.system_restart_sessions),
-                    description = stringResource(R.string.system_restart_sessions_desc),
-                    trailing = {
-                        OutlinedButton(
-                            onClick = viewModel::restartSessions,
-                            enabled = !state.restartingSessions,
-                        ) {
-                            Text(stringResource(R.string.system_restart_sessions))
-                        }
-                    },
-                )
-            }
-        }
-
         item(key = "system-mobile") {
             SettingsCard(highlighted = highlight == "system-mobile") {
                 SettingsSectionTitle(stringResource(R.string.system_mobile_title))
@@ -331,15 +218,6 @@ fun SystemSettingsTab(
                     ),
                     onAction = viewModel::runWindowsAction,
                     onUninstallRequest = { confirmUninstall = true },
-                )
-            }
-        }
-
-        if (androidUpdates != null) {
-            item(key = "system-android-update") {
-                AndroidAppUpdateCard(
-                    controller = androidUpdates,
-                    appVersion = appVersion,
                 )
             }
         }
@@ -426,6 +304,154 @@ fun SystemSettingsTab(
             dismissButton = {
                 TextButton(onClick = { confirmUninstall = false }) {
                     Text(stringResource(R.string.settings_cancel))
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The server's own update notices (`ompweb update`, `omp update`) and the
+ * session restart. One card, registered at the top of the System tab beside
+ * the Android app update.
+ */
+@Composable
+private fun ServerUpdatesCard(
+    state: SystemSettingsState,
+    viewModel: SettingsViewModel,
+    highlight: String?,
+    onConfirmUpdate: (UpdateKind) -> Unit,
+) {
+    SettingsCard(
+        highlighted = highlight in setOf(
+            "system-app-update",
+            "system-omp-update",
+            "system-restart-sessions",
+        ),
+    ) {
+        SettingsSectionTitle(stringResource(R.string.system_app_update))
+        val appUpdate = state.appUpdate
+        if (appUpdate == null) {
+            Text(
+                stringResource(R.string.system_loading),
+                style = MaterialTheme.typography.bodySmall,
+                color = LocalOmpColors.current.textMuted,
+            )
+        } else {
+            if (appUpdate.updatesDisabled) {
+                Text(
+                    stringResource(R.string.system_app_update_disabled),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalOmpColors.current.textMuted,
+                )
+            } else {
+                Text(
+                    text = appUpdate.currentVersion?.let {
+                        stringResource(R.string.system_app_update_current, it)
+                    } ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalOmpColors.current.textMuted,
+                )
+                Text(
+                    text = if (appUpdate.updateAvailable) {
+                        stringResource(
+                            R.string.system_app_update_available,
+                            appUpdate.availableVersion ?: "",
+                        )
+                    } else {
+                        stringResource(R.string.system_app_update_up_to_date)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (appUpdate.updateAvailable) {
+                        LocalOmpColors.current.statusWarning
+                    } else {
+                        LocalOmpColors.current.text
+                    },
+                )
+                Text(
+                    stringResource(R.string.system_update_command),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LocalOmpColors.current.textDim,
+                )
+                CopyableValue(appUpdate.updateCommand)
+                if (appUpdate.updateAvailable) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (appUpdate.selfUpdateSupported) {
+                            Button(
+                                onClick = { onConfirmUpdate(UpdateKind.APP) },
+                                enabled = !state.appUpdateRun.busy,
+                            ) {
+                                Text(stringResource(R.string.system_app_update_install))
+                            }
+                        }
+                        TextButton(onClick = viewModel::openReleaseNotes) {
+                            Text(stringResource(R.string.system_update_notes))
+                        }
+                    }
+                }
+            }
+        }
+        UpdateRunStatus(state.appUpdateRun, viewModel = viewModel)
+
+        SettingsDivider()
+        SettingsSectionTitle(stringResource(R.string.system_omp_update))
+        val ompUpdate = state.ompUpdate
+        if (ompUpdate == null) {
+            Text(
+                stringResource(R.string.system_omp_unknown),
+                style = MaterialTheme.typography.bodySmall,
+                color = LocalOmpColors.current.textMuted,
+            )
+        } else {
+            Text(
+                text = ompUpdate.currentVersion?.let {
+                    stringResource(R.string.system_omp_current, it)
+                } ?: stringResource(R.string.system_omp_unknown),
+                style = MaterialTheme.typography.bodySmall,
+                color = LocalOmpColors.current.textMuted,
+            )
+            if (ompUpdate.updateAvailable) {
+                Text(
+                    stringResource(R.string.system_omp_available, ompUpdate.availableVersion ?: ""),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalOmpColors.current.statusWarning,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onConfirmUpdate(UpdateKind.OMP) },
+                        enabled = !state.ompUpdateRun.busy,
+                    ) {
+                        Text(stringResource(R.string.system_omp_update_install))
+                    }
+                }
+            }
+            CopyableValue(ompUpdate.updateCommand)
+        }
+        UpdateRunStatus(state.ompUpdateRun, viewModel = viewModel)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { viewModel.checkAppUpdate(force = true) },
+                enabled = !state.checkingAppUpdate,
+            ) {
+                Text(stringResource(R.string.system_check_updates))
+            }
+            OutlinedButton(
+                onClick = { viewModel.checkOmpUpdate(force = true) },
+                enabled = !state.checkingOmpUpdate,
+            ) {
+                Text(stringResource(R.string.system_omp_update))
+            }
+        }
+        SettingsDivider()
+        SettingsRow(
+            title = stringResource(R.string.system_restart_sessions),
+            description = stringResource(R.string.system_restart_sessions_desc),
+            trailing = {
+                OutlinedButton(
+                    onClick = viewModel::restartSessions,
+                    enabled = !state.restartingSessions,
+                ) {
+                    Text(stringResource(R.string.system_restart_sessions))
                 }
             },
         )

@@ -325,6 +325,19 @@ class AndroidUpdateControllerTest {
     }
 
     @Test
+    fun `a dismissed banner keeps the settings action available`() = runTest(UnconfinedTestDispatcher()) {
+        val controller = controller(backgroundScope, FakePrefs(), FakeSource(candidate("1.1.0")))
+        controller.check()
+
+        controller.dismiss("1.1.0")
+
+        assertNull("dismiss hides the banner for that version", controller.state.value.notice)
+        val available = controller.state.value.available
+        assertEquals("the Settings card still announces it", "1.1.0", available?.availableVersion)
+        assertTrue("and keeps its install action", available?.installable == true)
+    }
+
+    @Test
     fun `an invalid or public http feed url is refused without a request`() = runTest(UnconfinedTestDispatcher()) {
         val prefs = FakePrefs()
         val source = FakeSource(candidate())

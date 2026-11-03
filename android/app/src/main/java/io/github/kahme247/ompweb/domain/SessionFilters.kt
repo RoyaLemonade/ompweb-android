@@ -5,7 +5,6 @@ import io.github.kahme247.ompweb.net.SessionSummary
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneId
 
 /**
  * The sessions list's filter bar: `Running`, `Unread` and an age preset.
@@ -28,35 +27,49 @@ data class SessionListFilter(
 /**
  * Age presets of the filter bar, measured against a session's `modified`.
  *
- * `Today` is the local calendar day (the chip says "Today", so a session from
- * 23:59 yesterday is yesterday even at 00:01). `TwoDays` and `SevenDays` are
- * rolling windows, which is what "not older than 2 days" means. The cutoff is
- * inclusive: a session modified exactly at the cutoff stays visible.
+ * Every preset is a rolling window from now — "not older than 24 h" is what
+ * the chip says, so a session from 23:59 yesterday still counts one minute
+ * after midnight. The cutoff is inclusive: a session modified exactly at the
+ * cutoff stays visible.
+ *
+ * 1.0.35 replaced the calendar-day preset `Today` with the 24 h window; the
+ * old wire names are still read by [fromWire] so a stored filter survives the
+ * upgrade instead of being silently dropped.
  */
-enum class SessionAgeFilter(val wireName: String) {
+enum class SessionAgeFilter(
+    val wireName: String,
+    /** Values written before 1.0.35; read only, never written again. */
+    private val legacyWireNames: List<String> = emptyList(),
+) {
     All("all"),
-    Today("today"),
-    TwoDays("2d"),
+    Last24Hours("24h", legacyWireNames = listOf("today")),
+    Last48Hours("48h", legacyWireNames = listOf("2d")),
     SevenDays("7d"),
     ;
 
     companion object {
-        /** Unknown or missing values fall back to [All] (forward-compatible storage). */
+        /**
+         * Reads a stored value; the pre-1.0.35 names map to their successor
+         * window. Unknown or missing values fall back to [All]
+         * (forward-compatible storage).
+         */
         fun fromWire(value: String?): SessionAgeFilter =
-            entries.firstOrNull { it.wireName == value } ?: All
+            entries.firstOrNull {
+                it.wireName == value || (value != null && value in it.legacyWireNames)
+            } ?: All
     }
 }
 
 /**
  * The instant before which a session is too old for [filter]; `null` means
- * "no age limit". [now] and [zone] are injected so the boundaries (midnight,
- * exactly 48 h/7 d) are testable.
+ * "no age limit". [now] is injected so the boundaries (exactly 24 h/48 h/7 d,
+ * and a clock that just crossed midnight) are testable.
  */
-fun SessionAgeFilter.cutoff(now: Instant, zone: ZoneId = ZoneId.systemDefault()): Instant? =
+fun SessionAgeFilter.cutoff(now: Instant): Instant? =
     when (this) {
         SessionAgeFilter.All -> null
-        SessionAgeFilter.Today -> now.atZone(zone).toLocalDate().atStartOfDay(zone).toInstant()
-        SessionAgeFilter.TwoDays -> now.minus(Duration.ofDays(2))
+        SessionAgeFilter.Last24Hours -> now.minus(Duration.ofHours(24))
+        SessionAgeFilter.Last48Hours -> now.minus(Duration.ofHours(48))
         SessionAgeFilter.SevenDays -> now.minus(Duration.ofDays(7))
     }
 
@@ -83,11 +96,10 @@ fun sessionPassesFilters(
     runningIds: Set<String>,
     unreadIds: Set<String>,
     now: Instant,
-    zone: ZoneId = ZoneId.systemDefault(),
 ): Boolean {
     if (filter.runningOnly && session.id !in runningIds) return false
     if (filter.unreadOnly && session.id !in unreadIds) return false
-    val cutoff = filter.age.cutoff(now, zone) ?: return true
+    val cutoff = filter.age.cutoff(now) ?: return true
     val modified = parseSessionTimestamp(session.modified) ?: return true
     return !modified.isBefore(cutoff)
 }
@@ -128,14 +140,13 @@ fun hiddenByFiltersCount(
     unreadIds: Set<String>,
     pinnedSessionIds: Collection<String> = emptyList(),
     now: Instant = Instant.EPOCH,
-    zone: ZoneId = ZoneId.systemDefault(),
 ): Int {
     if (!filter.active) return 0
     val pinned = pinnedSessionIds.toSet()
     return sessionsByProject.values.sumOf { sessions ->
         sessions.count { session ->
             session.id !in pinned &&
-                !sessionPassesFilters(session, filter, runningIds, unreadIds, now, zone)
+                !sessionPassesFilters(session, filter, runningIds, unreadIds, now)
         }
     }
 }
@@ -165,7 +176,6 @@ fun visibleSessionEntries(
     unreadIds: Set<String> = emptySet(),
     age: SessionAgeFilter = SessionAgeFilter.All,
     now: Instant = Instant.EPOCH,
-    zone: ZoneId = ZoneId.systemDefault(),
     pinnedProjectPaths: Collection<String> = emptyList(),
 ): List<Pair<ManagedProject, List<SessionSummary>>> {
     val filter = SessionListFilter(runningOnly, unreadOnly, age)
@@ -175,7 +185,7 @@ fun visibleSessionEntries(
     for (project in projects) {
         var list = sessionsByProject[project.path].orEmpty()
         if (filter.active) {
-            list = list.filter { sessionPassesFilters(it, filter, runningIds, unreadIds, now, zone) }
+            list = list.filter { sessionPassesFilters(it, filter, runningIds, unreadIds, now) }
         }
         if (q.isNotEmpty()) list = list.filter { sessionMatchesSearch(it, q) }
         if (list.isEmpty()) {

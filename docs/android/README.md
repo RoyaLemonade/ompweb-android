@@ -72,7 +72,7 @@ and returns to the password screen; **Change server** forgets the address too.
 ## Finding sessions
 
 The three chips above the session list narrow a long workspace list; they
-combine, so **Running** + **Unread** + **2 days** shows only chats that are all
+combine, so **Running** + **Unread** + **48 h** shows only chats that are all
 three.
 
 - **Running** — chats the server currently drives (or another omp process
@@ -80,10 +80,14 @@ three.
 - **Unread** — a session that wants attention: the unread dot the sidebar
   already showed, an unread entry in the notification list, or a blocking
   input dialog that waits for an answer.
-- **Age** — `All`, `Today` (local calendar day), `2 days` or `7 days`, based on
-  the newest message in the chat. Opening or reloading a chat is not activity:
-  omp rewrites the session file on a resume, and the app does not mistake that
-  write for a message. The menu sits behind the chip.
+- **Age** — `All`, `24 h`, `48 h` or `7 days`, based on the newest message in
+  the chat. The windows are measured back from now, not from midnight: at
+  00:05 a chat from 23:58 is seven minutes old and stays in `24 h`, while
+  yesterday morning is already out. A filter saved by 1.0.34 keeps working —
+  the old `Today` becomes `24 h` and `2 days` becomes `48 h`. Opening or
+  reloading a chat is not activity: omp rewrites the session file on a resume,
+  and the app does not mistake that write for a message. The menu sits behind
+  the chip.
 
 Pinned sessions and projects ignore the filters: a pin is your explicit
 choice, so their shortcut rows stay at the top. Projects whose sessions all
@@ -174,10 +178,14 @@ For reliable delivery:
 ## Updating the app
 
 The app updates itself from **Settings → System & Updates → Android app
-update**, and offers the update in a banner on the main screen. It checks its
-source when the main screen opens after signing in and every six hours;
-**Check for updates** forces a request. **Dismiss** hides the banner for that
-version; a newer release shows again.
+update** (the first card on that tab), and offers the update in a banner on the
+main screen plus a compact **Update available** row above the settings category
+list. It checks its source when the main screen opens after signing in and
+every six hours; **Check for updates** forces a request. **Dismiss** hides the
+banner for that version; a newer release shows again. The settings card and the
+category-list row keep their install action either way, so an update can never
+end up announced without a way to install it — declining the mobile-data
+question or a refused install returns to the same **Install** button.
 
 An install is verified before Android sees the file:
 
