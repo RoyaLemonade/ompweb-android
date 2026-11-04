@@ -389,6 +389,31 @@ class ChatEngineSyncTest {
     }
 
     @Test
+    fun `a failed reload after a stream epoch surfaces a retry error over the kept rows`() {
+        val engine = engine()
+        engine.setSession("s1")
+        engine.drainEffects()
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1"),
+                messages = listOf(user("hello", 1)),
+            ),
+        )
+        engine.feed(obj("""{"type":"agent_start","web":{"streamId":"a","sequence":1}}"""))
+        engine.feed(obj("""{"type":"connected","web":{"streamId":"b","sequence":1}}"""))
+        engine.drainEffects()
+
+        engine.historyRequestFailed("offline")
+
+        val state = engine.state.value
+        assertEquals("the kept rows stay on screen", 1, state.messages.size)
+        assertTrue(state.historyLoaded)
+        assertEquals("the failure is shown with its retry banner", "offline", state.historyError)
+    }
+
+    @Test
     fun `an empty cached page is not a seed`() {
         val engine = engine()
         engine.setSession("s1")

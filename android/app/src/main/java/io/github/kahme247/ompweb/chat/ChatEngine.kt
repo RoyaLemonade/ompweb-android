@@ -90,6 +90,8 @@ class ChatEngine(
     private var lastLiveStreamId: String? = null
 
     private var runHadContent = false
+    /** Rows kept across a stream epoch wait for the reset reload to confirm them. */
+    private var epochResyncPending = false
     private var lastRunError: String? = null
     /**
      * Bumped whenever the roster is cleared. An in-flight `get_subagents` or
@@ -132,6 +134,7 @@ class ChatEngine(
         lastLiveSequence = -1
         lastLiveStreamId = null
         runHadContent = false
+        epochResyncPending = false
         lastRunError = null
         awaitingResponseCheck = false
         maybeStartedRun = false
@@ -325,11 +328,15 @@ class ChatEngine(
     }
 
     fun historyRequestFailed(message: String) {
+        // The rows kept across a stream epoch are unconfirmed too: a failed
+        // reconcile must surface (retry banner), not leave them silently stale.
+        val epochRows = epochResyncPending
+        epochResyncPending = false
         _state.update {
             // A cached transcript that is on screen keeps the chat usable: it
             // becomes the loaded state, so the failure offers a retry banner
             // above it instead of the full-pane load error.
-            val seeded = it.historyStale
+            val seeded = it.historyStale || epochRows
             it.copy(
                 historyLoading = false,
                 pagesLoading = false,
@@ -418,6 +425,7 @@ class ChatEngine(
             }
         }
         while (entryIds.size < messages.size) entryIds += ""
+        epochResyncPending = false
 
         _state.update {
             it.copy(
@@ -965,6 +973,7 @@ class ChatEngine(
         toolSequences.clear()
         lastLiveSequence = -1
         lastLiveStreamId = null
+        epochResyncPending = _state.value.historyLoaded
         effects += ChatEffect.RequestContext(reset = true)
     }
 
