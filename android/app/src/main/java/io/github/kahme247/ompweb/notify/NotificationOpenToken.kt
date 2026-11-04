@@ -31,6 +31,18 @@ object NotificationOpenToken {
     /** The token that belongs into [NotificationIntents.EXTRA_OPEN_TOKEN]. */
     fun sign(context: Context, sessionId: String): String = sign(secret(context), sessionId)
 
+    /**
+     * Create the per-installation secret before the first notification is
+     * posted. A token in the shade outlives the process that minted it: if the
+     * lazily created secret were still only in memory when the process died,
+     * every posted notification would carry a token that could never verify
+     * again, and tapping it would silently do nothing. Creating it at startup
+     * plus committing it in [secret] makes that impossible.
+     */
+    fun prepare(context: Context) {
+        secret(context)
+    }
+
     /** Constant-time check of a token that arrived with an exported intent. */
     fun verify(context: Context, sessionId: String, token: String?): Boolean =
         verify(secret(context), sessionId, token)
@@ -55,9 +67,13 @@ object NotificationOpenToken {
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         decode(prefs.getString(KEY_SECRET, null))?.let { return it }
         val created = ByteArray(SECRET_BYTES).also(SecureRandom()::nextBytes)
+        // commit(), not apply(): a PendingIntent that carries a token signed
+        // with this secret may already be in the shade when the process dies,
+        // and the asynchronous write could still be queued. A lost secret
+        // would make every such notification unopenable.
         prefs.edit()
             .putString(KEY_SECRET, Base64.getUrlEncoder().withoutPadding().encodeToString(created))
-            .apply()
+            .commit()
         return created
     }
 

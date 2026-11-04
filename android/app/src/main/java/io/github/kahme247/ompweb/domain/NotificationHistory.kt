@@ -57,6 +57,10 @@ data class NotificationHistoryEvent(
     val from: String? = null,
     val to: String? = null,
     val aliases: List<String> = emptyList(),
+    /** A two-hour reminder of a still unanswered `input` dialog. */
+    val reminder: Boolean = false,
+    /** ISO time that dialog was opened (the reminder's `pendingSince`). */
+    val pendingSince: String? = null,
 ) {
     /** True when [sessionId] names this session under its current or a former id. */
     fun concerns(sessionId: String): Boolean = this.sessionId == sessionId || sessionId in aliases
@@ -199,6 +203,8 @@ private fun parseNotificationHistoryEvent(element: JsonElement?): NotificationHi
         aliases = root.stringList("aliases")
             .filter { it.isNotBlank() && it != sessionId }
             .distinct(),
+        reminder = root["reminder"]?.strictBoolean() == true,
+        pendingSince = root.string("pendingSince")?.takeIf { it.isNotBlank() },
     )
 }
 

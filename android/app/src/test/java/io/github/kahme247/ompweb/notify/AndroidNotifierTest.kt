@@ -42,12 +42,15 @@ class AndroidNotifierTest {
     private var vibrate = true
     private var completedSound = false
     private var now = 1_000_000L
+    private var language = "en"
     private val notifier = AndroidNotifier(
         context,
         origin = { null },
         vibrate = { vibrate },
         completedSound = { completedSound },
         clock = { now },
+        language = { language },
+        zone = java.time.ZoneId.of("UTC"),
     )
 
     private val project = NotifyProject(key = "c:/work/ompwebandroid", label = "ompwebandroid")
@@ -346,5 +349,112 @@ class AndroidNotifierTest {
         )
         assertEquals("completed_silent", summary.channelId)
         assertEquals(project.label, summary.extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString())
+    }
+
+    @Test
+    fun `open intents of two notices never share their identity`() {
+        assertTrue(notifier.post(input("s1"), null))
+        assertTrue(notifier.post(NotifyEvent(type = NotifyType.Completed, sessionId = "s2"), null))
+
+        val first = requireNotNull(posted("s1:input")?.contentIntent) {
+            "a session notification needs a content intent"
+        }
+        val second = requireNotNull(posted("s2:completed")?.contentIntent)
+
+        val firstIntent = shadowOf(first).savedIntent
+        val secondIntent = shadowOf(second).savedIntent
+        // PendingIntent equality ignores extras, so the data URI is what keeps
+        // two sessions (or types) apart when their tag request codes collide.
+        assertNotNull("every open intent names its target in the data URI", firstIntent.data)
+        assertNotNull(secondIntent.data)
+        assertNotEquals(firstIntent.data, secondIntent.data)
+        assertFalse(
+            "differently addressed intents must not compare equal",
+            firstIntent.filterEquals(secondIntent),
+        )
+        assertEquals("s1", firstIntent.getStringExtra(NotificationIntents.EXTRA_SESSION_ID))
+        assertEquals("s2", secondIntent.getStringExtra(NotificationIntents.EXTRA_SESSION_ID))
+        assertTrue(
+            "a tap from the shade starts the app's own task",
+            firstIntent.flags and android.content.Intent.FLAG_ACTIVITY_NEW_TASK != 0,
+        )
+    }
+
+    @Test
+    fun `a reminder replaces its input notification and alerts again`() {
+        assertTrue(
+            notifier.post(
+                NotifyEvent(type = NotifyType.Input, sessionId = "s1", sessionName = "Fix the tests", requestId = "req-1"),
+                project,
+            ),
+        )
+        val before = requireNotNull(posted("s1:input"))
+        assertEquals(0, before.flags and Notification.FLAG_ONLY_ALERT_ONCE)
+
+        assertTrue(
+            notifier.post(
+                NotifyEvent(
+                    type = NotifyType.Input,
+                    sessionId = "s1",
+                    sessionName = "Fix the tests",
+                    detail = "pick one",
+                    requestId = "req-1",
+                    reminder = true,
+                    pendingSince = "2026-11-04T13:32:00Z",
+                ),
+                project,
+            ),
+        )
+
+        val after = requireNotNull(posted("s1:input"))
+        assertEquals("Reminder: Fix the tests", after.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+        assertEquals(
+            "Waiting for your answer since 13:32: pick one",
+            after.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+        )
+        assertEquals(
+            "an update must still sound/vibrate",
+            0,
+            after.flags and Notification.FLAG_ONLY_ALERT_ONCE,
+        )
+        assertEquals("needs_input_v2", after.channelId)
+    }
+
+    @Test
+    fun `the lock-screen version still opens the session it belongs to`() {
+        assertTrue(notifier.post(input("s1"), null))
+
+        val publicVersion = requireNotNull(posted("s1:input")?.publicVersion) {
+            "every private notification needs a lock-screen version"
+        }
+        val intent = shadowOf(requireNotNull(publicVersion.contentIntent)).savedIntent
+        assertEquals("s1", intent.getStringExtra(NotificationIntents.EXTRA_SESSION_ID))
+        assertTrue(
+            "the tap is bound to this installation",
+            !intent.getStringExtra(NotificationIntents.EXTRA_OPEN_TOKEN).isNullOrEmpty(),
+        )
+    }
+
+    @Test
+    fun `a reminder follows the device language`() {
+        language = "de"
+        assertTrue(
+            notifier.post(
+                NotifyEvent(
+                    type = NotifyType.Input,
+                    sessionId = "s1",
+                    sessionName = "Fix the tests",
+                    reminder = true,
+                    pendingSince = "2026-11-04T13:32:00Z",
+                ),
+                null,
+            ),
+        )
+        val posted = requireNotNull(posted("s1:input"))
+        assertEquals("Erinnerung: Fix the tests", posted.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+        assertEquals(
+            "Wartet seit 13:32 auf deine Antwort.",
+            posted.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+        )
     }
 }

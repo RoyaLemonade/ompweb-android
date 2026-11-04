@@ -58,6 +58,23 @@ class NotificationHistoryTest {
     // --- Parsing -----------------------------------------------------------
 
     @Test
+    fun `a reminder entry keeps its marker and waiting time`() {
+        val parsed = parseNotificationHistoryEntry(
+            entryJson(
+                id = "s1:input",
+                event = buildJsonObject {
+                    put("type", NotificationHistoryType.INPUT)
+                    put("sessionId", "s1")
+                    put("reminder", true)
+                    put("pendingSince", "2026-11-04T13:32:00Z")
+                },
+            ),
+        )!!
+        assertTrue(parsed.event.reminder)
+        assertEquals("2026-11-04T13:32:00Z", parsed.event.pendingSince)
+    }
+
+    @Test
     fun `a valid entry keeps its wire fields`() {
         val parsed = parseNotificationHistoryEntry(
             entryJson(

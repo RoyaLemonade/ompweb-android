@@ -28,6 +28,8 @@
     <string name="notify_ui_body_model_switch_none">Switched %1$s → %2$s.</string>
     <string name="notify_ui_body_test">Notifications are working.</string>
     <string name="notify_ui_body_other">Session activity.</string>
+    <string name="notify_ui_reminder_title">Reminder: %1$s</string>
+    <string name="notify_ui_body_input_reminder">Waiting for your answer since %1$s</string>
 
     <!-- Notification settings (web `SettingsConfig.tsx` NotificationSettingsPanel) -->
     <string name="notify_ui_settings_title">Notifications</string>
@@ -66,6 +68,8 @@
     <string name="notify_ui_type_error_desc">A run stops with an error after retries and fallbacks, or the omp process exits.</string>
     <string name="notify_ui_type_model_switch">Model switched automatically</string>
     <string name="notify_ui_type_model_switch_desc">omp switches models on its own: a fallback after a refusal, rate limit, or usage limit, or a prewalk / plan hand-off.</string>
+    <string name="notify_ui_input_reminder">Remind me about unanswered questions</string>
+    <string name="notify_ui_input_reminder_desc">While a question or approval stays unanswered, its notification comes back every two hours (at most twelve times). It stops as soon as you answer it anywhere, or the session ends.</string>
     <string name="notify_ui_when_active">While you are using ompweb elsewhere</string>
     <string name="notify_ui_when_active_toast">Show an in-app toast</string>
     <string name="notify_ui_when_active_system">Always send a system notification</string>

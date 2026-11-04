@@ -66,6 +66,7 @@ import io.github.kahme247.ompweb.domain.NotificationHistoryEntry
 import io.github.kahme247.ompweb.domain.NotificationHistoryEvent
 import io.github.kahme247.ompweb.domain.NotificationHistoryType
 import io.github.kahme247.ompweb.domain.clipNotificationText
+import io.github.kahme247.ompweb.domain.reminderSinceText
 import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
 import java.text.DateFormat
 import java.util.Date
@@ -339,7 +340,8 @@ private fun NotificationRow(
 @Composable
 private fun notificationTitle(event: NotificationHistoryEvent): String {
     val name = event.sessionName?.let { clipNotificationText(it, NOTIFICATION_TITLE_MAX) }
-    return name?.takeIf { it.isNotEmpty() } ?: stringResource(R.string.notify_ui_untitled_session)
+    val session = name?.takeIf { it.isNotEmpty() } ?: stringResource(R.string.notify_ui_untitled_session)
+    return if (event.reminder) stringResource(R.string.notify_ui_reminder_title, session) else session
 }
 
 @Composable
@@ -349,8 +351,16 @@ private fun notificationBody(event: NotificationHistoryEvent): String {
     val detail = event.detail?.let { clipNotificationText(it, NOTIFICATION_DETAIL_MAX) }.orEmpty()
     return when (event.type) {
         NotificationHistoryType.COMPLETED -> stringResource(R.string.notify_ui_body_completed)
-        NotificationHistoryType.INPUT ->
-            if (detail.isNotEmpty()) stringResource(R.string.notify_ui_body_input, detail) else stringResource(R.string.notify_ui_body_input_none)
+        NotificationHistoryType.INPUT -> {
+            val since = event.pendingSince?.let { reminderSinceText(it) }
+            when {
+                event.reminder && since != null ->
+                    stringResource(R.string.notify_ui_body_input_reminder, since)
+
+                detail.isNotEmpty() -> stringResource(R.string.notify_ui_body_input, detail)
+                else -> stringResource(R.string.notify_ui_body_input_none)
+            }
+        }
 
         NotificationHistoryType.ERROR ->
             if (detail.isNotEmpty()) stringResource(R.string.notify_ui_body_error, detail) else stringResource(R.string.notify_ui_body_error_none)

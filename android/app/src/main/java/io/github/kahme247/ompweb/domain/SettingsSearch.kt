@@ -368,6 +368,14 @@ val LOCAL_SETTINGS_SEARCH_ENTRIES: List<SettingsSearchEntry> = listOf(
         SettingsScope.UI,
     ),
     SettingsSearchEntry(
+        "notifications-input-reminder",
+        SettingsTab.NOTIFICATIONS,
+        SECTION_NOTIFICATIONS,
+        "Remind me about unanswered questions",
+        "An unanswered question or approval notification comes back every two hours, at most twelve times, and stops as soon as it is answered.",
+        SettingsScope.UI,
+    ),
+    SettingsSearchEntry(
         "notifications-when-active",
         SettingsTab.NOTIFICATIONS,
         SECTION_NOTIFICATIONS,

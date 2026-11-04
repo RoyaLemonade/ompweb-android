@@ -44,6 +44,7 @@ class NotificationSettingsScreenTest {
     private var sendTests = 0
     private val vibrateChanges = mutableListOf<Boolean>()
     private val completedSoundChanges = mutableListOf<Boolean>()
+    private val inputReminderChanges = mutableListOf<Boolean>()
 
     private val actions = NotificationSettingsActions(
         setEnabled = {},
@@ -51,6 +52,7 @@ class NotificationSettingsScreenTest {
         setWhenActive = {},
         setVibrate = { vibrateChanges += it },
         setCompletedSound = { completedSoundChanges += it },
+        setInputReminder = { inputReminderChanges += it },
         sendTest = { sendTests += 1 },
         requestPermission = {},
         openNotificationSettings = {},
@@ -138,5 +140,23 @@ class NotificationSettingsScreenTest {
         render(NotificationSettingsUiState(enabled = false, completedSound = true))
 
         completedSoundSwitch().performScrollTo().assertIsOn().assertIsNotEnabled()
+    }
+
+    private fun inputReminderSwitch() = composeRule.onNodeWithTag("notifications-input-reminder-switch")
+
+    @Test
+    fun theReminderSwitchIsOnByDefaultAndReportsTheChange() {
+        render(NotificationSettingsUiState(enabled = true))
+
+        inputReminderSwitch().performScrollTo().assertIsOn().performClick()
+
+        assertEquals(listOf(false), inputReminderChanges)
+    }
+
+    @Test
+    fun theReminderSwitchShowsAStoredChoiceAndFollowsTheMasterSwitch() {
+        render(NotificationSettingsUiState(enabled = false, inputReminder = false))
+
+        inputReminderSwitch().performScrollTo().assertIsOff().assertIsNotEnabled()
     }
 }

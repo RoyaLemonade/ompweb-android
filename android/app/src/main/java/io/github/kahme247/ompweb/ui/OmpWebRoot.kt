@@ -174,6 +174,24 @@ fun OmpWebRoot(container: AppContainer) {
                     val settingsHost: SettingsHostViewModel =
                         viewModel(factory = container.settingsHostViewModelFactory)
 
+                    // A notification tap (or a session link) must take the
+                    // stage. Both overlays are `rememberSaveable`: after the
+                    // process died with Settings or the notification list
+                    // open, Android restores that dialog on top of the chat
+                    // the tap asked for. Closing them here lets the session
+                    // effect in `SessionsScreen` land visibly.
+                    val pendingSessionOpen by container.pendingSessionOpen.collectAsStateWithLifecycle()
+                    LaunchedEffect(pendingSessionOpen) {
+                        if (pendingSessionOpen == null) return@LaunchedEffect
+                        notificationsOpen = false
+                        settingsOpen = false
+                        settingsCwd = null
+                        // Same rule as closing Settings by hand: its scoped
+                        // view models (keys, model configs) do not stay in the
+                        // heap behind a chat.
+                        settingsHost.clear()
+                    }
+
                     DisposableEffect(notificationHistoryViewModel) {
                         container.notifications.onDelivered = notificationHistoryViewModel::onDelivered
                         onDispose { container.notifications.onDelivered = null }

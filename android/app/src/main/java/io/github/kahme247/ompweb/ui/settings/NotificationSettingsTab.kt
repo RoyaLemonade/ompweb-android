@@ -86,6 +86,7 @@ fun NotificationSettingsTab(
         },
         vibrate = prefs.vibrate,
         completedSound = prefs.completedSound,
+        inputReminder = prefs.inputReminder,
         permission = permissionState(status, snapshot.notifyPermissionPrompted),
         battery = when {
             status.batteryUnrestricted -> NotificationBatteryState.EXEMPT
@@ -152,6 +153,7 @@ fun NotificationSettingsTab(
             },
             setVibrate = { container.notifications.setVibrate(it) },
             setCompletedSound = { container.notifications.setCompletedSound(it) },
+            setInputReminder = { container.notifications.setInputReminder(it) },
             sendTest = {
                 if (!busy) {
                     busy = true

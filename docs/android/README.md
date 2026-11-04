@@ -171,6 +171,14 @@ For reliable delivery:
 - **Sound/vibration for finished chats** (off by default) keeps a finished chat
   silent in the shade; a burst of finished chats then alerts at most once.
   Questions and errors always keep their alert and their vibration patterns.
+- **Remind me about unanswered questions** (on by default) repeats the
+  notification of a question or approval that is still unanswered every two
+  hours, at most twelve times. A reminder replaces the original notification
+  under the same tag and sounds/vibrates again; its title starts with
+  *Reminder* (*Erinnerung* in German) and its text names the time it waits
+  since. It stops as soon as the dialog is answered on any device, cancelled,
+  expires, or the session ends. Your server stores this choice per device; an
+  older server ignores it.
 - **Vibrate** (on by default) gives a waiting agent two pulses and an error one
   long pulse; a finished-chat alert (when its switch is on) pulses once, and
   stays a sound without a pulse when **Vibrate** is off. Sending or answering

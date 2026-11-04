@@ -417,7 +417,14 @@ fun SessionsScreen(
     }
 
     fun openDetail() {
-        if (compact) scope.launch { navigator.navigateTo(ListDetailPaneScaffoldRole.Detail) }
+        // Show the detail pane whenever it is not on screen. On the compact
+        // layout that is the list; on a tablet both panes are already visible,
+        // so nothing is pushed. Checking the pane (instead of `compact`) also
+        // keeps a second tap on another session from stacking a duplicate
+        // Detail destination, which used to need an extra back press.
+        if (navigator.scaffoldValue[ListDetailPaneScaffoldRole.Detail] == PaneAdaptedValue.Hidden) {
+            scope.launch { navigator.navigateTo(ListDetailPaneScaffoldRole.Detail) }
+        }
     }
 
     fun openFiles() {
@@ -549,6 +556,8 @@ fun SessionsScreen(
             newSessionCwd = state.newSessionCwd,
             lastSessionId = restoreSessionId,
             lastNewSessionCwd = restoreNewSessionCwd,
+            // A notification tap in this same composition owns the stage.
+            sessionOpenPending = pendingSessionOpen != null,
         )
         if (step.consumes) ColdStartSessionRestore.pending = false
         when (step) {

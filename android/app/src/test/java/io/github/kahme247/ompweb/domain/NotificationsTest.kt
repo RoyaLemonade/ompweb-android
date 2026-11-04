@@ -68,6 +68,7 @@ class NotificationsTest {
         assertEquals(NotifyWhenActive.System, prefs.whenActive)
         assertEquals("en", prefs.locale)
         assertFalse("finished chats are silent by default", prefs.completedSound)
+        assertTrue("unanswered questions are reminded by default", prefs.inputReminder)
     }
 
     @Test
@@ -120,6 +121,75 @@ class NotificationsTest {
             ),
         )
         assertTrue((loud.toJson()["completedSound"] as JsonPrimitive).content.toBoolean())
+    }
+
+    @Test
+    fun `the input reminder choice round-trips and defaults to on`() {
+        val off = NotifyPrefs.DEFAULT.copy(inputReminder = false)
+        assertEquals(off, NotifyPrefs.parse(json(off.toJson().toString())))
+        assertEquals(
+            "on when the field is absent (older stored prefs or server)",
+            true,
+            NotifyPrefs.parse(
+                json(
+                    """{"enabled":true,"types":{"completed":true,"input":true,"error":true},
+                       "whenActive":"system","locale":"en","vibrate":true}""",
+                ),
+            ).inputReminder,
+        )
+        assertFalse((off.toJson()["inputReminder"] as JsonPrimitive).content.toBoolean())
+    }
+
+    @Test
+    fun `an input reminder is prefixed and names the time it waits since`() {
+        val reminder = NotifyEvent(
+            type = NotifyType.Input,
+            sessionId = "s",
+            sessionName = "Fix the tests",
+            detail = "pick one",
+            reminder = true,
+            pendingSince = "2026-11-04T13:32:00Z",
+        )
+        val english = renderNotification(reminder, language = "en", zone = java.time.ZoneId.of("UTC"))
+        assertEquals("Reminder: Fix the tests", english.title)
+        assertEquals("Waiting for your answer since 13:32: pick one", english.body)
+
+        val german = renderNotification(reminder, language = "de", zone = java.time.ZoneId.of("UTC"))
+        assertEquals("Erinnerung: Fix the tests", german.title)
+        assertEquals("Wartet seit 13:32 auf deine Antwort: pick one", german.body)
+
+        // The first event of a dialog keeps the plain wording.
+        val first = renderNotification(reminder.copy(reminder = false), language = "de")
+        assertEquals("Fix the tests", first.title)
+        assertEquals("Waiting for your answer: pick one", first.body)
+    }
+
+    @Test
+    fun `a reminder without a usable time still reads as a reminder`() {
+        val reminder = NotifyEvent(
+            type = NotifyType.Input,
+            sessionId = "s",
+            sessionName = "Fix the tests",
+            reminder = true,
+            pendingSince = "not a timestamp",
+        )
+        val rendered = renderNotification(reminder, language = "en")
+        assertEquals("Reminder: Fix the tests", rendered.title)
+        assertEquals("Waiting for your answer.", rendered.body)
+    }
+
+    @Test
+    fun `the event parser keeps the reminder marker and pending time`() {
+        val parsed = requireNotNull(
+            parseNotifyEvent(
+                json(
+                    """{"type":"input","sessionId":"s","requestId":"req-1",
+                       "reminder":true,"pendingSince":"2026-11-04T13:32:00Z"}""",
+                ),
+            ),
+        )
+        assertTrue(parsed.reminder)
+        assertEquals("2026-11-04T13:32:00Z", parsed.pendingSince)
     }
 
     @Test

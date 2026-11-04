@@ -109,6 +109,57 @@ class ColdStartRestoreTest {
         assertTrue(decide(listLoaded = true, sessionIds = emptyList()).consumes)
     }
 
+    @Test
+    fun `the new-session marker never replaces a notification's session`() {
+        // The process was dead and last showed the composer. A notification
+        // tap starts the app with its own session in the same composition; the
+        // restore must not validate and reopen the composer on top of it.
+        val step = decide(
+            listLoaded = true,
+            sessionIds = emptyList(),
+            lastNewSessionCwd = "/work/pane",
+            sessionOpenPending = true,
+        )
+
+        assertEquals(ColdStartRestoreStep.Done, step)
+        assertTrue("the tap settles the marker", step.consumes)
+    }
+
+    @Test
+    fun `the last-session restore never replaces a notification's session`() {
+        val step = decide(
+            listLoaded = true,
+            sessionIds = listOf("last"),
+            lastSessionId = "last",
+            sessionOpenPending = true,
+        )
+
+        assertEquals(ColdStartRestoreStep.Done, step)
+        assertTrue(step.consumes)
+    }
+
+    @Test
+    fun `without a notification the saved markers still restore`() {
+        assertEquals(
+            ColdStartRestoreStep.OpenSession("last"),
+            decide(
+                listLoaded = true,
+                sessionIds = listOf("last"),
+                lastSessionId = "last",
+                sessionOpenPending = false,
+            ),
+        )
+        assertEquals(
+            ColdStartRestoreStep.OpenNewSession("/work/pane"),
+            decide(
+                listLoaded = true,
+                sessionIds = emptyList(),
+                lastNewSessionCwd = "/work/pane",
+                sessionOpenPending = false,
+            ),
+        )
+    }
+
     private fun decide(
         pending: Boolean = true,
         listLoaded: Boolean,
@@ -117,6 +168,7 @@ class ColdStartRestoreTest {
         newSessionCwd: String? = null,
         lastSessionId: String? = null,
         lastNewSessionCwd: String? = null,
+        sessionOpenPending: Boolean = false,
     ) = coldStartRestoreStep(
         pending = pending,
         listLoaded = listLoaded,
@@ -125,5 +177,6 @@ class ColdStartRestoreTest {
         newSessionCwd = newSessionCwd,
         lastSessionId = lastSessionId,
         lastNewSessionCwd = lastNewSessionCwd,
+        sessionOpenPending = sessionOpenPending,
     )
 }

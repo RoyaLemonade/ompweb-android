@@ -41,6 +41,7 @@ import io.github.kahme247.ompweb.net.NotificationsApi
 import io.github.kahme247.ompweb.net.TestPushResult
 import io.github.kahme247.ompweb.net.captureApi
 import io.github.kahme247.ompweb.net.userMessage
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -573,6 +574,9 @@ class NotificationCenter(
     /** "Sound/vibration for finished chats"; off makes completed alerts silent. */
     fun setCompletedSound(enabled: Boolean) = updatePrefs { it.copy(completedSound = enabled) }
 
+    /** Repeat a still unanswered `input` notification every two hours. */
+    fun setInputReminder(enabled: Boolean) = updatePrefs { it.copy(inputReminder = enabled) }
+
     private fun updatePrefs(transform: (NotifyPrefs) -> NotifyPrefs) {
         scope.launch {
             val current = settings.snapshot.value.notifyPrefs
@@ -788,7 +792,7 @@ class NotificationCenter(
 
     /** Adds [event] as the newest in-app notice, replacing its tag's older one. */
     private fun showNotice(event: NotifyEvent) {
-        val notice = inAppNotice(event)
+        val notice = inAppNotice(event, Locale.getDefault().language)
         _notices.update { current -> notice.addTo(current, MAX_IN_APP_NOTICES) }
     }
 

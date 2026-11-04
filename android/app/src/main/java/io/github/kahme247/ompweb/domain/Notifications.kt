@@ -1,6 +1,11 @@
 package io.github.kahme247.ompweb.domain
 
 import java.security.SecureRandom
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -177,6 +182,12 @@ data class NotifyPrefs(
      * it. The server ignores this device-local field.
      */
     val completedSound: Boolean = false,
+    /**
+     * Repeat a still unanswered `input` notification every two hours. The
+     * server stores and honours this per device; an absent field means on, so
+     * a server from before the reminders simply ignores it.
+     */
+    val inputReminder: Boolean = true,
 ) {
     fun isEnabled(type: NotifyType): Boolean = when (type) {
         NotifyType.Completed -> completed
@@ -207,6 +218,7 @@ data class NotifyPrefs(
         put("locale", locale)
         put("vibrate", vibrate)
         put("completedSound", completedSound)
+        put("inputReminder", inputReminder)
     }
 
     companion object {
@@ -231,6 +243,7 @@ data class NotifyPrefs(
                     ?: DEFAULT.locale,
                 vibrate = root.bool("vibrate") ?: DEFAULT.vibrate,
                 completedSound = root.bool("completedSound") ?: DEFAULT.completedSound,
+                inputReminder = root.bool("inputReminder") ?: DEFAULT.inputReminder,
             )
         }
     }
@@ -269,6 +282,14 @@ data class NotifyEvent(
      * the session, so the app's own guard must do the same.
      */
     val aliases: List<String> = emptyList(),
+    /**
+     * True when the server re-published a still unanswered `input` dialog
+     * (the two-hour reminder). It replaces the original notification under the
+     * same tag and must alert again.
+     */
+    val reminder: Boolean = false,
+    /** ISO time the dialog was opened (`pendingSince` on the wire). */
+    val pendingSince: String? = null,
 ) {
     /** `<sessionId>:<type>` replaces an older notification of the same session/kind. */
     val tag: String get() = "$sessionId:${type.wire}"
@@ -292,11 +313,20 @@ data class RenderedNotification(
 )
 
 /** Title, body, tag and channel for one event; text matches `renderNotification`. */
-fun renderNotification(event: NotifyEvent): RenderedNotification {
+fun renderNotification(
+    event: NotifyEvent,
+    language: String = "en",
+    zone: ZoneId = ZoneId.systemDefault(),
+): RenderedNotification {
     val detail = event.detail?.takeIf { it.isNotBlank() }?.let { clipNotificationText(it) }
     val body = when (event.type) {
         NotifyType.Completed -> "Task finished."
-        NotifyType.Input -> detail?.let { "Waiting for your answer: $it" } ?: "Waiting for your answer."
+        NotifyType.Input ->
+            if (event.reminder) {
+                reminderBody(detail, event.pendingSince, language, zone)
+            } else {
+                detail?.let { "Waiting for your answer: $it" } ?: "Waiting for your answer."
+            }
         NotifyType.Error -> detail?.let { "Run failed: $it" } ?: "Run failed."
         NotifyType.ModelSwitch -> when {
             event.from != null && event.to != null && detail != null -> "Switched ${event.from} → ${event.to}: $detail"
@@ -304,9 +334,42 @@ fun renderNotification(event: NotifyEvent): RenderedNotification {
             else -> detail.orEmpty()
         }
     }
-    val title = event.sessionName?.takeIf { it.isNotBlank() }
+    val name = event.sessionName?.takeIf { it.isNotBlank() }
         ?.let { clipNotificationText(it, NOTIFICATION_TITLE_MAX) } ?: "omp session"
+    val title = if (event.reminder) "${reminderWord(language)}: $name" else name
     return RenderedNotification(title = title, body = body, tag = event.tag, channel = event.type.channel())
+}
+
+/** "Reminder" in the language the device speaks; the rest of the app is English. */
+fun reminderWord(language: String): String =
+    if (language.lowercase(Locale.ROOT).startsWith("de")) "Erinnerung" else "Reminder"
+
+/**
+ * The local time a reminder's dialog has been waiting, e.g. `14:32`, or null
+ * when the server did not send a parseable `pendingSince`.
+ */
+fun reminderSinceText(pendingSince: String?, zone: ZoneId = ZoneId.systemDefault()): String? {
+    val value = pendingSince?.takeIf { it.isNotBlank() } ?: return null
+    val instant = runCatching { Instant.parse(value) }.getOrNull()
+        ?: runCatching { OffsetDateTime.parse(value).toInstant() }.getOrNull()
+        ?: return null
+    return DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT).withZone(zone).format(instant)
+}
+
+/** "Waiting since 14:32" instead of the plain "Waiting for your answer". */
+private fun reminderBody(detail: String?, pendingSince: String?, language: String, zone: ZoneId): String {
+    val since = reminderSinceText(pendingSince, zone)
+    val german = language.lowercase(Locale.ROOT).startsWith("de")
+    return when {
+        german && since != null && detail != null -> "Wartet seit $since auf deine Antwort: $detail"
+        german && since != null -> "Wartet seit $since auf deine Antwort."
+        german && detail != null -> "Wartet auf deine Antwort: $detail"
+        german -> "Wartet auf deine Antwort."
+        since != null && detail != null -> "Waiting for your answer since $since: $detail"
+        since != null -> "Waiting for your answer since $since."
+        detail != null -> "Waiting for your answer: $detail"
+        else -> "Waiting for your answer."
+    }
 }
 
 /** The settings "Send test notification" entry rendered locally. */
@@ -388,8 +451,8 @@ data class InAppNotice(
     fun matches(tag: String, requestId: String): Boolean = id == tag && this.requestId == requestId
 }
 
-fun inAppNotice(event: NotifyEvent): InAppNotice {
-    val rendered = renderNotification(event)
+fun inAppNotice(event: NotifyEvent, language: String = "en"): InAppNotice {
+    val rendered = renderNotification(event, language)
     return InAppNotice(
         id = rendered.tag,
         sessionId = event.sessionId,
@@ -664,6 +727,8 @@ fun parseNotifyEvent(value: JsonElement?): NotifyEvent? {
         aliases = root.stringList("aliases")
             .filter { it.isNotBlank() && it != sessionId }
             .distinct(),
+        reminder = root.bool("reminder") == true,
+        pendingSince = root.string("pendingSince")?.takeIf { it.isNotBlank() },
     )
 }
 

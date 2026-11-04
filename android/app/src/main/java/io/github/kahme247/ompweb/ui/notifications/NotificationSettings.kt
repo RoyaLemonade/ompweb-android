@@ -79,6 +79,8 @@ data class NotificationSettingsUiState(
     val vibrate: Boolean = true,
     /** "Sound/vibration for finished chats": off by default, completed stays silent. */
     val completedSound: Boolean = false,
+    /** "Remind me about unanswered questions": on by default, server repeats every 2 h. */
+    val inputReminder: Boolean = true,
     val permission: NotificationPermissionState = NotificationPermissionState.NOT_ASKED,
     val battery: NotificationBatteryState = NotificationBatteryState.EXEMPT,
     val connection: NotificationConnectionState = NotificationConnectionState.DISABLED,
@@ -103,6 +105,7 @@ data class NotificationSettingsActions(
     val setWhenActive: (NotificationWhenActive) -> Unit,
     val setVibrate: (Boolean) -> Unit,
     val setCompletedSound: (Boolean) -> Unit,
+    val setInputReminder: (Boolean) -> Unit,
     val sendTest: () -> Unit,
     val requestPermission: () -> Unit,
     val openNotificationSettings: () -> Unit,
@@ -226,6 +229,20 @@ fun NotificationSettingsScreen(
                     },
                 )
             }
+            SettingsRow(
+                title = stringResource(R.string.notify_ui_input_reminder),
+                description = stringResource(R.string.notify_ui_input_reminder_desc),
+                enabled = controlsEnabled,
+                highlighted = highlight == "notifications-input-reminder",
+                trailing = {
+                    Switch(
+                        checked = state.inputReminder,
+                        onCheckedChange = actions.setInputReminder,
+                        enabled = controlsEnabled,
+                        modifier = Modifier.testTag("notifications-input-reminder-switch"),
+                    )
+                },
+            )
         }
 
         Text(

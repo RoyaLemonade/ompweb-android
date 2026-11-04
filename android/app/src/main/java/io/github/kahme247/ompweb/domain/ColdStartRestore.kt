@@ -61,6 +61,8 @@ sealed interface ColdStartRestoreStep {
  * @param newSessionCwd the new-session pane the shell already shows.
  * @param lastSessionId the persisted session marker (`last_session_id`).
  * @param lastNewSessionCwd the persisted new-session marker.
+ * @param sessionOpenPending a notification tap or deep link is waiting to open
+ *   its own session: the restore must not open the saved view on top of it.
  */
 fun coldStartRestoreStep(
     pending: Boolean,
@@ -70,8 +72,14 @@ fun coldStartRestoreStep(
     newSessionCwd: String?,
     lastSessionId: String?,
     lastNewSessionCwd: String?,
+    sessionOpenPending: Boolean = false,
 ): ColdStartRestoreStep {
     if (!pending) return ColdStartRestoreStep.Done
+    // A notification tap names the view the user asked for. Restoring the
+    // last session or composer afterwards would replace it (the tap arrived
+    // while the process was dead, so both effects run in the same composition
+    // and the restore used to win the race).
+    if (sessionOpenPending) return ColdStartRestoreStep.Done
     // A re-run after the restore already navigated (rotation, recomposition):
     // the marker is settled, but never open a second pane.
     if (selectedSessionId != null || newSessionCwd != null) return ColdStartRestoreStep.Done

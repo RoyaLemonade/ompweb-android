@@ -37,6 +37,8 @@ import io.github.kahme247.ompweb.domain.silentId
 import io.github.kahme247.ompweb.domain.supportsVibration
 import io.github.kahme247.ompweb.domain.vibrationPattern
 import io.github.kahme247.ompweb.domain.vibratingId
+import java.time.ZoneId
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -71,6 +73,10 @@ class AndroidNotifier(
     private val completedSound: () -> Boolean = { false },
     /** Time base of the finished-chat burst window (injected for the tests). */
     private val clock: () -> Long = { System.currentTimeMillis() },
+    /** Device language for a reminder's title ("Erinnerung:" vs "Reminder:"). */
+    private val language: () -> String = { Locale.getDefault().language },
+    /** Zone the reminder's "waiting since" time is shown in. */
+    private val zone: ZoneId = ZoneId.systemDefault(),
 ) : Notifier {
 
     /** One alert per project per finished-chat burst (see [CompletedAlertWindow]). */
@@ -232,9 +238,9 @@ class AndroidNotifier(
     override fun post(event: NotifyEvent, project: NotifyProject?): Boolean {
         if (!canPostNotifications()) return false
         ensureChannels()
-        val rendered = renderNotification(event)
+        val rendered = renderNotification(event, language(), zone)
         val plan = notificationActions(event, context.getString(R.string.notify_reply_label))
-        val builder = baseBuilder(rendered, channelIdFor(rendered.channel, project))
+        val builder = baseBuilder(rendered, channelIdFor(rendered.channel, project), event.sessionId)
             .setContentIntent(openSessionIntent(event.sessionId, rendered.tag))
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setWhen(System.currentTimeMillis())
@@ -298,6 +304,11 @@ class AndroidNotifier(
             )
         }
 
+        // A reminder re-posts the very same tag/id that is already in the shade.
+        // Android only suppresses that repeat when the updated notification
+        // carries FLAG_ONLY_ALERT_ONCE (results and summaries do); a reminder
+        // must sound/vibrate again, so it explicitly clears it.
+        if (event.reminder) builder.setOnlyAlertOnce(false)
         val posted = notify(rendered.tag, EVENT_NOTIFICATION_ID, builder.build())
         if (posted && project != null) {
             refreshGroupSummary(
@@ -385,7 +396,7 @@ class AndroidNotifier(
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(privateVersion(NotifyChannel.Completed))
+            .setPublicVersion(privateVersion(channel, tag, sessionId))
         builder.addExtras(
             Bundle().apply {
                 if (sessionId.isNotBlank()) putString(NotificationIntents.EXTRA_SESSION_ID, sessionId)
@@ -419,7 +430,11 @@ class AndroidNotifier(
      * The one builder every posted notification starts from: channel, icon,
      * title/body, priority and the private lock-screen version.
      */
-    private fun baseBuilder(rendered: RenderedNotification, channelId: String): NotificationCompat.Builder =
+    private fun baseBuilder(
+        rendered: RenderedNotification,
+        channelId: String,
+        sessionId: String? = null,
+    ): NotificationCompat.Builder =
         NotificationCompat.Builder(context, channelId)
             .setSmallIcon(iconFor(rendered.channel))
             .setColor(colorFor(rendered.channel))
@@ -429,7 +444,7 @@ class AndroidNotifier(
             .setAutoCancel(true)
             .setPriority(priority(rendered.channel))
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(privateVersion(rendered.channel))
+            .setPublicVersion(privateVersion(rendered.channel, rendered.tag, sessionId))
 
     /** Closes every notification this app posted (sign-out/server switch). */
     override fun cancelAll() {
@@ -682,7 +697,17 @@ class AndroidNotifier(
         val session = sessionId?.takeIf { it.isNotBlank() }
         val intent = Intent(context, MainActivity::class.java).apply {
             action = Intent.ACTION_VIEW
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            // Identity for PendingIntent equality is `filterEquals` (action,
+            // data, type, package, component, categories) — extras do not
+            // count. Without a data URI all open intents are identical apart
+            // from their request code, so a hash collision between two tags
+            // would let FLAG_UPDATE_CURRENT replace one session's extras with
+            // another's. The tag in the URI keeps every target distinct no
+            // matter what the request code collides with.
+            data = Uri.parse("ompweb://notify/open/${Uri.encode(tag)}")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
             session?.let {
                 putExtra(NotificationIntents.EXTRA_SESSION_ID, it)
                 // Only this app's own PendingIntent can carry a valid token, so
@@ -759,14 +784,30 @@ class AndroidNotifier(
         return builder
     }
 
-    private fun privateVersion(channel: NotifyChannel): Notification =
-        NotificationCompat.Builder(context, channel.androidChannelId(vibrate = false))
+    /**
+     * The lock-screen version. It never repeats the event text, but its tap
+     * still lands on the session: the extras are only read by our own activity
+     * and are not visible while the device is locked.
+     */
+    private fun privateVersion(
+        channel: NotifyChannel,
+        tag: String? = null,
+        sessionId: String? = null,
+    ): Notification {
+        val session = sessionId?.takeIf { it.isNotBlank() }
+        val contentIntent = if (session != null && tag != null) {
+            openSessionIntent(session, tag)
+        } else {
+            openSessionIntent(null, channel.quietId)
+        }
+        return NotificationCompat.Builder(context, channel.androidChannelId(vibrate = false))
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(R.string.app_name))
             .setContentText(context.getString(R.string.notify_private_body))
-            .setContentIntent(openSessionIntent(null, channel.quietId))
+            .setContentIntent(contentIntent)
             .setPriority(priority(channel))
             .build()
+    }
 
     private fun priority(channel: NotifyChannel): Int = when (channel) {
         NotifyChannel.NeedsInput, NotifyChannel.Errors -> NotificationCompat.PRIORITY_HIGH
