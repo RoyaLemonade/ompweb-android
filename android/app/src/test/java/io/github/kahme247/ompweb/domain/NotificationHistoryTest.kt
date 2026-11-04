@@ -1,6 +1,7 @@
 package io.github.kahme247.ompweb.domain
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -76,6 +77,29 @@ class NotificationHistoryTest {
         assertEquals("Allow tool: bash?", parsed.event.detail)
         assertEquals(1_700_000_000_000L, parsed.at)
         assertTrue(parsed.read)
+    }
+
+    @Test
+    fun `a moved session keeps its former ids and resolves to the new one`() {
+        val parsed = parseNotificationHistoryEntry(
+            entryJson(
+                event = buildJsonObject {
+                    put("type", NotificationHistoryType.COMPLETED)
+                    put("sessionId", "old-id")
+                    put("sessionName", "Moved")
+                    put("aliases", buildJsonArray { add("new-id"); add("old-id") })
+                },
+            ),
+        )!!
+
+        // The current id may not be repeated as an alias.
+        assertEquals(listOf("new-id"), parsed.event.aliases)
+        assertTrue(parsed.event.concerns("old-id"))
+        assertTrue(parsed.event.concerns("new-id"))
+
+        // The list's dots follow every id the entry was filed under, so the
+        // row under the moved session still shows the unread marker.
+        assertEquals(setOf("old-id", "new-id"), unreadNotificationSessionIds(listOf(parsed)))
     }
 
     @Test

@@ -9,6 +9,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -47,6 +49,8 @@ class NotificationHistoryViewModelTest {
         var loadGate: CompletableDeferred<Unit>? = null
         var readGate: CompletableDeferred<Unit>? = null
         val reads = mutableListOf<List<String>>()
+        /** Every `markRead` call, including failed ones. */
+        var readCalls = 0
         val removed = mutableListOf<String>()
         var clears = 0
 
@@ -62,6 +66,7 @@ class NotificationHistoryViewModelTest {
         }
 
         override suspend fun markRead(ids: List<String>) {
+            readCalls++
             val gate = readGate
             if (gate != null) {
                 readGate = null
@@ -374,5 +379,109 @@ class NotificationHistoryViewModelTest {
 
         assertEquals(listOf("s2:completed"), vm.state.value.entries.map { it.id })
         assertTrue(api.reads.isEmpty())
+    }
+
+    @Test
+    fun `opening a chat marks its unread history entries read`() = runTest {
+        // The session list's dot counts an unread history entry. Reading the
+        // chat must clear both sources, not only the sidebar marker; another
+        // session's entry stays untouched.
+        val api = FakeHistoryApi().apply {
+            entries = listOf(entry("s1:completed"), entry("s2:error"))
+        }
+        val vm = NotificationHistoryViewModel(api, this)
+        vm.refresh()
+        advanceUntilIdle()
+
+        vm.onSessionVisible("s1")
+        assertTrue(vm.state.value.entries.first { it.id == "s1:completed" }.read)
+        assertEquals(1, vm.state.value.unreadCount)
+
+        advanceUntilIdle()
+        assertEquals(listOf(listOf("s1:completed")), api.reads)
+        assertFalse(vm.state.value.entries.first { it.id == "s2:error" }.read)
+    }
+
+    @Test
+    fun `a history entry loaded while the chat is visible is read at once`() = runTest {
+        // The history may not have been loaded yet when the chat opens (the
+        // bell loads it on first composition). The answer must not leave an
+        // old entry unread for the chat the user is looking at.
+        val api = FakeHistoryApi().apply { entries = listOf(entry("s1:completed")) }
+        val vm = NotificationHistoryViewModel(api, this)
+
+        vm.onSessionVisible("s1")
+        vm.refresh()
+        advanceUntilIdle()
+
+        assertTrue(vm.state.value.entries.single().read)
+        assertEquals(listOf(listOf("s1:completed")), api.reads)
+    }
+
+    @Test
+    fun `a notification delivered for the visible chat does not become unread`() = runTest {
+        val api = FakeHistoryApi()
+        val vm = NotificationHistoryViewModel(api, this)
+        vm.onSessionVisible("s1")
+
+        vm.onDelivered(deliveredEvent(sessionId = "s1"))
+        advanceUntilIdle()
+
+        assertTrue(vm.state.value.entries.single().read)
+        assertEquals(listOf(listOf("s1:completed")), api.reads)
+    }
+
+    @Test
+    fun `entries filed under a former id are read for the moved chat`() = runTest {
+        // omp moves a conversation to a new file and keeps the old id as an
+        // alias on its notifications. Opening the moved chat must read them.
+        val api = FakeHistoryApi()
+        val vm = NotificationHistoryViewModel(api, this)
+
+        vm.onSessionVisible("new-id")
+        vm.onDelivered(
+            buildJsonObject {
+                put("type", "completed")
+                put("sessionId", "old-id")
+                put("aliases", buildJsonArray { add("new-id") })
+            },
+        )
+        advanceUntilIdle()
+
+        assertTrue(vm.state.value.entries.single().read)
+        assertEquals(listOf(listOf("old-id:completed")), api.reads)
+    }
+
+    @Test
+    fun `a notification that arrives after the chat was left stays unread`() = runTest {
+        val api = FakeHistoryApi()
+        val vm = NotificationHistoryViewModel(api, this)
+        vm.onSessionVisible("s1")
+        vm.onSessionVisible(null)
+
+        vm.onDelivered(deliveredEvent(sessionId = "s1"))
+        advanceUntilIdle()
+
+        assertFalse(vm.state.value.entries.single().read)
+        assertTrue(api.reads.isEmpty())
+    }
+
+    @Test
+    fun `a failing mark read while the chat is visible is not retried on every reload`() = runTest {
+        // A failed PATCH reloads the server's list, which still answers
+        // "unread". The visible chat must not turn that into an endless
+        // retry; leaving and reopening the chat tries again.
+        val api = FakeHistoryApi().apply {
+            entries = listOf(entry("s1:completed"))
+            readFailure = ApiError.Http(500, "boom")
+        }
+        val vm = NotificationHistoryViewModel(api, this)
+
+        vm.onSessionVisible("s1")
+        vm.refresh()
+        advanceUntilIdle()
+
+        assertEquals(1, api.readCalls)
+        assertEquals(1, vm.state.value.unreadCount)
     }
 }

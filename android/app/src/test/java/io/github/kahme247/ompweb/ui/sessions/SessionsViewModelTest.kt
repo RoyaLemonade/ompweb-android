@@ -592,6 +592,190 @@ class SessionsViewModelTest {
     }
 
     @Test
+    fun `a completion observed after the chat was read does not bring the badge back`() {
+        // The user reads the chat while its run is still going. The run stops
+        // while the chat is on screen, but the frame is missed (a reconnect
+        // answers with the server's snapshot instead of the transition). Back
+        // on the list, applying that snapshot must not re-add a badge: the
+        // newest message of the run is exactly the one the chat showed.
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"}],"runningSessionIds":["s1"]}""",
+            ),
+        )
+        detailResponses.add(
+            json(
+                """{"sessionId":"s1","info":{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"},"context":{}}""",
+            ),
+        )
+        viewModel.setActive(true)
+        val stream = open()
+        waitFor("running badge") { viewModel.state.value.runningIds == setOf("s1") }
+        waitFor("running subscription") { transport.subscribes.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+        waitFor("chat open") { viewModel.state.value.selectedSessionId == "s1" }
+        viewModel.closeDetail()
+        waitFor("list back") { viewModel.state.value.selectedSessionId == null }
+
+        stream.send("s1", """{"type":"running","runningSessionIds":[]}""")
+        Thread.sleep(300)
+
+        assertTrue(
+            "the read chat stays read, unread=${viewModel.state.value.unreadIds}",
+            viewModel.state.value.unreadIds.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `a message newer than what was read marks the chat unread on the next list answer`() {
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"}],"runningSessionIds":[]}""",
+            ),
+        )
+        detailResponses.add(
+            json(
+                """{"sessionId":"s1","info":{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"},"context":{}}""",
+            ),
+        )
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:05:00.000Z"}],"runningSessionIds":[]}""",
+            ),
+        )
+        viewModel.setActive(true)
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+        waitFor("chat open") { viewModel.state.value.selectedSessionId == "s1" }
+        viewModel.closeDetail()
+        waitFor("list back") { viewModel.state.value.selectedSessionId == null }
+
+        // A new message arrived after the chat was read: the list answer has a
+        // newer message time, so the chat wants attention again.
+        viewModel.refresh()
+        waitFor("newer message in the list") {
+            viewModel.state.value.sessions.single().lastMessageAt == "2026-10-20T10:05:00.000Z"
+        }
+
+        assertEquals(setOf("s1"), viewModel.state.value.unreadIds)
+    }
+
+    @Test
+    fun `a newer message in a list answer that raced a running frame still marks the chat unread`() {
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"}],"runningSessionIds":[]}""",
+            ),
+        )
+        detailResponses.add(
+            json(
+                """{"sessionId":"s1","info":{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"},"context":{}}""",
+            ),
+        )
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:05:00.000Z"}],"runningSessionIds":[]}""",
+            ).setBodyDelay(1_500, java.util.concurrent.TimeUnit.MILLISECONDS),
+        )
+        viewModel.setActive(true)
+        val stream = open()
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
+        waitFor("running subscription") { transport.subscribes.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+        waitFor("chat open") { viewModel.state.value.selectedSessionId == "s1" }
+        viewModel.closeDetail()
+        waitFor("list back") { viewModel.state.value.selectedSessionId == null }
+
+        val requestsBefore = server.requestCount
+        viewModel.refresh()
+        // The answer is on its way (1.5 s) when a running frame lands: the
+        // frame owns the running set, but the answer's message times still
+        // decide the badge.
+        waitFor("refresh on the wire") { server.requestCount > requestsBefore }
+        stream.send("s1", """{"type":"running","runningSessionIds":[]}""")
+
+        waitFor("newer message in the list") {
+            viewModel.state.value.sessions.single().lastMessageAt == "2026-10-20T10:05:00.000Z"
+        }
+        assertEquals(setOf("s1"), viewModel.state.value.unreadIds)
+    }
+
+    @Test
+    fun `a message the chat recorded as it closed does not mark the chat unread`() {
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"}],"runningSessionIds":[]}""",
+            ),
+        )
+        detailResponses.add(
+            json(
+                """{"sessionId":"s1","info":{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"},"context":{}}""",
+            ),
+        )
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:01:00.000Z"}],"runningSessionIds":[]}""",
+            ),
+        )
+        viewModel.setActive(true)
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+        waitFor("chat open") { viewModel.state.value.selectedSessionId == "s1" }
+        viewModel.closeDetail()
+        waitFor("list back") { viewModel.state.value.selectedSessionId == null }
+
+        // The chat screen records its newest message asynchronously; a send it
+        // was still committing lands just after the way back. It was part of
+        // what the chat showed, not a new arrival.
+        activity.record("s1", java.time.Instant.parse("2026-10-20T10:01:00Z").toEpochMilli())
+        waitFor("late activity recorded") {
+            viewModel.state.value.knownActivity["s1"] == java.time.Instant.parse("2026-10-20T10:01:00Z").toEpochMilli()
+        }
+
+        viewModel.refresh()
+        waitFor("newer message in the list") {
+            viewModel.state.value.sessions.single().lastMessageAt == "2026-10-20T10:01:00.000Z"
+        }
+        assertTrue(
+            "the just-read chat stays read, unread=${viewModel.state.value.unreadIds}",
+            viewModel.state.value.unreadIds.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `a new run after reading still marks the chat unread when it stops`() {
+        sessionResponses.add(
+            sessions(
+                """{"sessions":[{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"}],"runningSessionIds":[]}""",
+            ),
+        )
+        detailResponses.add(
+            json(
+                """{"sessionId":"s1","info":{"id":"s1","cwd":"/work/a","lastMessageAt":"2026-10-20T10:00:00.000Z"},"context":{}}""",
+            ),
+        )
+        viewModel.setActive(true)
+        val stream = open()
+        waitFor("list loaded") { viewModel.state.value.sessions.isNotEmpty() }
+        waitFor("running subscription") { transport.subscribes.isNotEmpty() }
+
+        viewModel.selectSession("s1")
+        waitFor("chat open") { viewModel.state.value.selectedSessionId == "s1" }
+        viewModel.closeDetail()
+        waitFor("list back") { viewModel.state.value.selectedSessionId == null }
+
+        // A new run is new activity: its end belongs to nobody's read state.
+        stream.send("s1", """{"type":"running","runningSessionIds":["s1"]}""")
+        waitFor("new run") { viewModel.state.value.runningIds == setOf("s1") }
+        stream.send("s1", """{"type":"running","runningSessionIds":[]}""")
+        waitFor("unread after the new run") { viewModel.state.value.unreadIds == setOf("s1") }
+    }
+
+    @Test
     fun `a slower older unread write never lands after the newer one`() {
         // The running transition writes {s1} slowly; the selection then clears
         // it. With one `launch` per write the stale {s1} could complete last

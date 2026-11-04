@@ -79,7 +79,10 @@ three.
   owns).
 - **Unread** — a session that wants attention: the unread dot the sidebar
   already showed, an unread entry in the notification list, or a blocking
-  input dialog that waits for an answer.
+  input dialog that waits for an answer. Opening a chat clears every one of
+  those for that chat up to what was shown (its notification entries are
+  marked read too); a message or notification that arrives afterwards makes it
+  unread again, while a completion that only reaches the app late does not.
 - **Age** — `All`, `24 h`, `48 h` or `7 days`, based on the newest message in
   the chat. The windows are measured back from now, not from midnight: at
   00:05 a chat from 23:58 is seven minutes old and stays in `24 h`, while

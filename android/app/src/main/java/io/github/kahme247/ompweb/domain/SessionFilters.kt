@@ -119,11 +119,17 @@ fun sidebarUnreadSessionIds(
     addAll(awaitingInputSessionIds.filter { it.isNotBlank() })
 }
 
-/** Session ids of the history entries the user has not read yet. */
+/**
+ * Session ids of the history entries the user has not read yet. An entry
+ * follows its session when omp moved it: the current id and every former id
+ * (alias) it was filed under are returned, so a row under the new id still
+ * gets the dot.
+ */
 fun unreadNotificationSessionIds(entries: List<NotificationHistoryEntry>): Set<String> =
     entries.asSequence()
         .filter { !it.read }
-        .map { it.event.sessionId.trim() }
+        .flatMap { entry -> sequenceOf(entry.event.sessionId) + entry.event.aliases }
+        .map { it.trim() }
         .filter { it.isNotEmpty() }
         .toSet()
 

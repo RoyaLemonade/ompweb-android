@@ -44,8 +44,10 @@ object NotificationHistoryType {
 
 /**
  * The event fields the history list needs. The wire event carries more
- * (`dialog`, `requestId`, `aliases`); those belong to the notification
- * renderer and the answer flow, not to this list.
+ * (`dialog`, `requestId`); those belong to the notification renderer and the
+ * answer flow, not to this list. [aliases] are the ids the session was filed
+ * under before omp moved it: the list and the chat use the new id, so a
+ * history entry must still resolve to that chat.
  */
 data class NotificationHistoryEvent(
     val type: String,
@@ -54,7 +56,11 @@ data class NotificationHistoryEvent(
     val detail: String? = null,
     val from: String? = null,
     val to: String? = null,
-)
+    val aliases: List<String> = emptyList(),
+) {
+    /** True when [sessionId] names this session under its current or a former id. */
+    fun concerns(sessionId: String): Boolean = this.sessionId == sessionId || sessionId in aliases
+}
 
 /**
  * One persisted notification. `id` is the server's replace-tag
@@ -190,7 +196,16 @@ private fun parseNotificationHistoryEvent(element: JsonElement?): NotificationHi
         detail = root.string("detail"),
         from = root.string("from"),
         to = root.string("to"),
+        aliases = root.stringList("aliases")
+            .filter { it.isNotBlank() && it != sessionId }
+            .distinct(),
     )
+}
+
+/** String elements only; a value that is not an array is dropped rather than guessed at. */
+private fun JsonObject.stringList(key: String): List<String> {
+    val array = this[key] as? JsonArray ?: return emptyList()
+    return array.mapNotNull { (it as? JsonPrimitive)?.takeIf { primitive -> primitive.isString }?.content }
 }
 
 private fun JsonObject.string(key: String): String? {

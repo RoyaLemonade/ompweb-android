@@ -9,9 +9,11 @@ import io.github.kahme247.ompweb.domain.NavigationEntry
 import io.github.kahme247.ompweb.domain.NavigationHistory
 import io.github.kahme247.ompweb.domain.SessionAgeFilter
 import io.github.kahme247.ompweb.domain.SessionListFilter
+import io.github.kahme247.ompweb.domain.activityIsAfterRead
 import io.github.kahme247.ompweb.domain.applyRunningTransition
 import io.github.kahme247.ompweb.domain.comparableProjectPath
 import io.github.kahme247.ompweb.domain.orderProjectsByActivity
+import io.github.kahme247.ompweb.domain.parseSessionTimestamp
 import io.github.kahme247.ompweb.domain.projectActivityCounts
 import io.github.kahme247.ompweb.domain.projectLastActivity
 import io.github.kahme247.ompweb.domain.pruneUnread
@@ -312,6 +314,25 @@ class SessionsViewModel(
     /** Incremented by every `running` frame that carries ids; orders them against GET snapshots. */
     private var runningFrameVersion = 0L
 
+    /**
+     * Newest message time (epoch millis, server clock) the user has had on
+     * screen per session. A completion that only *arrives* late — a reconnect
+     * snapshot, a deferred reload, a stale list — must not re-add a badge for
+     * activity the chat already showed; [applyRunningTransition] compares the
+     * two (see `domain/UnreadSessions.kt`). A new run drops its entry, because
+     * that activity has not been read.
+     */
+    private val readActivityAt = HashMap<String, Long>()
+
+    /**
+     * The chat that was selected most recently, even after going back to the
+     * list. The chat screen records its newest message asynchronously; a
+     * message it was still committing as the user left belongs to what that
+     * chat had shown, not to a new arrival. Nothing else records activity for
+     * a closed chat (its stream is released while hidden).
+     */
+    private var lastViewedSessionId: String? = null
+
     /** Orders list responses: an older GET must never overwrite a newer one. */
     private var sessionsGeneration = 0L
 
@@ -358,6 +379,10 @@ class SessionsViewModel(
                     if (known != _state.value.knownActivity) {
                         _state.update { it.copy(knownActivity = known) }
                     }
+                    // The open chat has shown these messages: they are read.
+                    // The last viewed one still counts right after going back,
+                    // where the chat screen may finish recording a send.
+                    bumpReadActivity(_state.value.selectedSessionId ?: lastViewedSessionId)
                 }
             }
         }
@@ -538,6 +563,8 @@ class SessionsViewModel(
             filtersSeededFor = null
             liveListOrigin = null
             liveProjectsOrigin = null
+            readActivityAt.clear()
+            lastViewedSessionId = null
             messageSearchJob?.cancel()
             messageSearchGeneration++
             val current = _state.value
@@ -596,6 +623,9 @@ class SessionsViewModel(
             _history.value = NavigationHistory()
             liveListOrigin = null
             liveProjectsOrigin = null
+            // Ids and message times belong to the server being left.
+            readActivityAt.clear()
+            lastViewedSessionId = null
         }
         loadedOrigin = originKey
         if (previousOrigin == null) {
@@ -649,6 +679,11 @@ class SessionsViewModel(
                     _state.value.elsewhere
                 }
                 val alive = list.sessions.mapTo(HashSet()) { it.id }.apply { addAll(running) }
+                val activityNow = activityTimes(list.sessions)
+                // A new run is activity nobody has read yet: the session loses
+                // its read marker. Both sets are locals of this answer, so the
+                // clear cannot be undone by a concurrent update.
+                if (authoritativeRunning) (running - previousRunning).forEach(readActivityAt::remove)
                 // Recompute the transition inside the update: a selection that
                 // cleared the badge while this response was in flight must not
                 // be overwritten by a set derived from the older state.
@@ -660,10 +695,24 @@ class SessionsViewModel(
                             running,
                             current.selectedSessionId,
                             current.unreadIds,
+                            readActivityAt,
+                            activityNow,
                         )
                     } else {
                         current.unreadIds
                     }
+                    // Activity newer than what the chat showed wants attention
+                    // even without a running frame (another client wrote, or
+                    // the completion frame was missed). Only sessions opened in
+                    // this process have a marker; everything else keeps the
+                    // running-transition rule. The answer's times are the
+                    // server's, so a stale answer can only be older than the
+                    // marker — never a false badge.
+                    val activeAfterRead = list.sessions.asSequence()
+                        .filter { it.id !in running && it.id != current.selectedSessionId }
+                        .filter { activityIsAfterRead(it.id, readActivityAt, activityNow) }
+                        .map { it.id }
+                        .toList()
                     current.copy(
                         loading = false,
                         refreshing = false,
@@ -675,7 +724,7 @@ class SessionsViewModel(
                         // `GET /api/sessions` does not send exitedSessions; only
                         // the running frames do. Taking the empty default here
                         // cleared every exited badge on each reload.
-                        unreadIds = pruneUnread(transitioned, alive),
+                        unreadIds = pruneUnread(transitioned, alive) + activeAfterRead,
                         error = null,
                     )
                 }
@@ -885,6 +934,54 @@ class SessionsViewModel(
         preferenceWrites.trySend { preferences.setUnreadSessionIds(_state.value.unreadIds) }
     }
 
+    /**
+     * Remembers that [sessionId]'s newest message was on screen. [at] is a
+     * message time from the session (its `lastMessageAt` or the transcript's
+     * own timestamps), never the device clock and never the file's
+     * `modified`: opening a chat rewrites that file and must not count as
+     * activity.
+     */
+    private fun bumpReadActivity(sessionId: String?, at: Long? = null) {
+        if (sessionId.isNullOrBlank()) return
+        val newest = newerOf(at, activityOf(sessionId)) ?: return
+        val current = readActivityAt[sessionId]
+        if (current == null || newest > current) readActivityAt[sessionId] = newest
+    }
+
+    /** Newest message time the app knows for [sessionId] from the list and the chat memo. */
+    private fun activityOf(sessionId: String): Long? {
+        val summary = _state.value.sessions.firstOrNull { it.id == sessionId }
+        return newerOf(
+            summary?.lastMessageAt?.let { parseSessionTimestamp(it)?.toEpochMilli() },
+            _state.value.knownActivity[sessionId],
+        )
+    }
+
+    /** Newest message time per session in one list answer (the chat memo wins when newer). */
+    private fun activityTimes(sessions: List<SessionSummary>): Map<String, Long> {
+        val known = _state.value.knownActivity
+        val result = HashMap<String, Long>(sessions.size + known.size)
+        for (session in sessions) {
+            val at = newerOf(
+                session.lastMessageAt?.let { parseSessionTimestamp(it)?.toEpochMilli() },
+                known[session.id],
+            )
+            if (at != null) result[session.id] = at
+        }
+        // A live placeholder has no summary yet; the chat's memo still counts.
+        for ((id, at) in known) {
+            val current = result[id]
+            if (current == null || at > current) result[id] = at
+        }
+        return result
+    }
+
+    private fun newerOf(first: Long?, second: Long?): Long? = when {
+        first == null -> second
+        second == null -> first
+        else -> maxOf(first, second)
+    }
+
     /** Session files change in bursts; one reload per burst is enough. */
     private fun scheduleReload() {
         if (!foreground || !listVisible) {
@@ -919,11 +1016,17 @@ class SessionsViewModel(
             val running = ids ?: previous.runningIds
             var unread = previous.unreadIds
             if (ids != null) {
+                val activityNow = activityTimes(previous.sessions)
+                // A new run clears the read marker: its activity is unread
+                // until the user looks at it.
+                (running - previous.runningIds).forEach(readActivityAt::remove)
                 unread = applyRunningTransition(
                     previous.runningIds,
                     running,
                     previous.selectedSessionId,
                     previous.unreadIds,
+                    readActivityAt,
+                    activityNow,
                 )
             }
             _state.update {
@@ -996,6 +1099,11 @@ class SessionsViewModel(
         if (recordHistory) _history.update { it.push(entry) }
         detailGeneration++
         detailJob?.cancel()
+        // The chat being left and the one being opened are both read up to
+        // what they have shown; a late completion for either stays silent.
+        bumpReadActivity(_state.value.selectedSessionId)
+        bumpReadActivity(id)
+        lastViewedSessionId = id
         // The web drops the id from the unread set whenever the selected
         // session changes (SessionSidebar.tsx effect on selectedSessionId).
         val unread = _state.value.unreadIds
@@ -1122,6 +1230,10 @@ class SessionsViewModel(
         detailGeneration++
         detailJob?.cancel()
         rememberLastView(newSessionCwd = null)
+        // What the chat showed until now is read, including messages that
+        // streamed in while it was open.
+        bumpReadActivity(current.selectedSessionId)
+        lastViewedSessionId = current.selectedSessionId
         _state.update {
             it.copy(
                 selectedSessionId = null,
@@ -1240,6 +1352,11 @@ class SessionsViewModel(
                 ),
                 activeCwd = info.projectKey ?: it.activeCwd,
             )
+        }
+        // A detail that is actually on screen is read: its own newest message
+        // time settles the watermark before the transcript arrives.
+        if (_state.value.selectedSessionId == id) {
+            bumpReadActivity(id, info.lastMessageAt?.let { parseSessionTimestamp(it)?.toEpochMilli() })
         }
         // The marker names a session the reader actually saw: it is written
         // once the detail is on screen, so a dead link (which never loads) can

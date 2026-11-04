@@ -64,8 +64,54 @@ class NotificationHistoryViewModel(
      */
     private var generation = 0
 
-    /** Ids the open list has shown; null while the list is closed. */
+    /** The ids the open list has shown; null while the list is closed. */
     private var shownIds: MutableSet<String>? = null
+
+    /** The chat the user is looking at; its history entries are read while it is visible. */
+    private var visibleSessionId: String? = null
+
+    /**
+     * Entries this visibility already tried to mark read, as `<id>@<at>`.
+     * A failed `PATCH` reloads the server's list; without this guard the
+     * reload would try the same entry again forever while the chat stays
+     * visible. Leaving and reopening the chat retries.
+     */
+    private val attemptedVisibleReads = mutableSetOf<String>()
+
+    /**
+     * The session list's unread dot also counts an unread history entry, so
+     * opening a chat must mark that chat's entries read — the same rule the
+     * notification shade follows by clearing its posts
+     * (`NotificationCenter.setVisibleSession`).
+     *
+     * Entries that arrive while the chat is visible (a delivery or a load) are
+     * read at once; ones that arrive after it was left stay unread. Passing
+     * `null` (chat closed, app backgrounded, another tab covering it) stops
+     * the marking.
+     */
+    fun onSessionVisible(sessionId: String?) {
+        val next = sessionId?.takeIf { it.isNotBlank() }
+        if (visibleSessionId != next) {
+            visibleSessionId = next
+            attemptedVisibleReads.clear()
+        }
+        // The same chat stays visible: catch entries that landed since the last
+        // mark without waiting for another composition.
+        markVisibleSessionRead()
+    }
+
+    /** Marks the visible chat's unread entries read, if any; a no-op otherwise. */
+    private fun markVisibleSessionRead() {
+        val sessionId = visibleSessionId ?: return
+        val pending = _state.value.entries.filter { entry ->
+            !entry.read &&
+                entry.event.concerns(sessionId) &&
+                "${entry.id}@${entry.at}" !in attemptedVisibleReads
+        }
+        if (pending.isEmpty()) return
+        attemptedVisibleReads += pending.map { "${it.id}@${it.at}" }
+        markRead(pending.map { it.id })
+    }
 
     /**
      * `GET /api/notifications/history`. The pane calls it on open and on every
@@ -104,6 +150,9 @@ class NotificationHistoryViewModel(
                         }
                     }
                     recordShown()
+                    // A load can bring an entry for the chat on screen (the
+                    // history was not loaded yet when it was opened).
+                    markVisibleSessionRead()
                 },
                 onFailure = { error ->
                     // Keep what is shown; a stale failure must not replace a newer load's answer.
@@ -127,6 +176,9 @@ class NotificationHistoryViewModel(
         sync.localChange()
         _state.update { it.copy(entries = mergeDeliveredNotification(it.entries, entry)) }
         recordShown()
+        // The chat on screen is being read: a frame that still names it must
+        // not leave a dot or a badge behind.
+        markVisibleSessionRead()
     }
 
     /** Mark exactly [ids] read (optimistic, then `PATCH`). */
@@ -201,6 +253,8 @@ class NotificationHistoryViewModel(
         generation++
         loadsInFlight = 0
         shownIds = null
+        visibleSessionId = null
+        attemptedVisibleReads.clear()
         sync.reset()
         _state.value = NotificationHistoryState()
     }

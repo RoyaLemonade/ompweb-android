@@ -297,10 +297,9 @@ fun SessionsScreen(
     val detailBanner: @Composable () -> Unit = if (detailShowsBanner) updateBanner else noBanner
     val filesSheetOpen = compact && filesState.panelOpen
     val chatCovered = overlayOpen || filesSheetOpen
-    LaunchedEffect(state.selectedSessionId, detailVisible, chatCovered) {
-        appContainer.notifications.setVisibleSession(
-            visibleChatSession(state.selectedSessionId, detailVisible, chatCovered),
-        )
+    val visibleSession = visibleChatSession(state.selectedSessionId, detailVisible, chatCovered)
+    LaunchedEffect(visibleSession) {
+        appContainer.notifications.setVisibleSession(visibleSession)
     }
     DisposableEffect(Unit) {
         onDispose { appContainer.notifications.setVisibleSession(null) }
@@ -376,6 +375,18 @@ fun SessionsScreen(
         .value
         .isAtLeast(Lifecycle.State.STARTED)
     LaunchedEffect(viewModel, processStarted) { viewModel.setForeground(processStarted) }
+    // An unread notification-history entry also paints the row's unread dot,
+    // so the chat that is actually on screen (and in the foreground) marks its
+    // entries read. A notification that arrives after the chat was left stays
+    // unread, and backgrounding the app stops the marking: it has not been
+    // seen then.
+    val readSession = visibleSession.takeIf { processStarted }
+    LaunchedEffect(readSession) {
+        appContainer.notificationHistoryViewModel.onSessionVisible(readSession)
+    }
+    DisposableEffect(Unit) {
+        onDispose { appContainer.notificationHistoryViewModel.onSessionVisible(null) }
+    }
     // Same rule for the list pane: with a chat open on a phone the list is
     // hidden, and re-downloading 130 KB per session-file write costs data for
     // an answer nobody sees. The deferred reload runs on return (P2).
