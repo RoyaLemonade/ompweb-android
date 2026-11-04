@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -334,6 +335,57 @@ class ChatEngineSyncTest {
         val state = engine.state.value
         assertEquals(false, state.historyLoaded)
         assertEquals("Network unreachable", state.historyError)
+    }
+
+    /**
+     * A reconnect, a re-subscribe after the chat left the screen, or a server
+     * restart answers with a fresh `web.streamId`. Only the live half of the
+     * stream belongs to that epoch; the committed transcript is the session
+     * file's history (web `useAgentSession-sync` resets its sync state, never
+     * the messages). Emptying it blanked the chat for the whole reload, and the
+     * transcript then lost the reader's scroll position.
+     */
+    @Test
+    fun `a new stream epoch keeps the committed transcript`() {
+        val engine = engine()
+        engine.setSession("s1")
+        engine.drainEffects()
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1", "e2"),
+                messages = listOf(user("hello", 1), assistant("hi", 2, "stop")),
+            ),
+        )
+        engine.feed(obj("""{"type":"agent_start","web":{"streamId":"a","sequence":1}}"""))
+        engine.feed(
+            obj(
+                """{"type":"message_start","web":{"streamId":"a","sequence":2},
+                    "message":{"role":"assistant","content":[{"type":"text","text":"streaming"}],"timestamp":3}}""",
+            ),
+        )
+        engine.feed(
+            obj(
+                """{"type":"tool_execution_start","web":{"streamId":"a","sequence":3},
+                    "toolCallId":"t1","toolName":"bash"}""",
+            ),
+        )
+        engine.drainEffects()
+        assertEquals(1, engine.state.value.liveTools.size)
+
+        engine.feed(obj("""{"type":"connected","web":{"streamId":"b","sequence":1}}"""))
+
+        val state = engine.state.value
+        assertEquals("the transcript survives the epoch", 2, state.messages.size)
+        assertEquals(listOf("e1", "e2"), state.entryIds)
+        assertTrue("the rows still count as loaded", state.historyLoaded)
+        assertNull("the old stream's reply is gone", state.streaming)
+        assertTrue("the old stream's tools are gone", state.liveTools.isEmpty())
+        assertTrue(
+            "the epoch still reconciles the transcript",
+            engine.drainEffects().any { it is ChatEffect.RequestContext && it.reset },
+        )
     }
 
     @Test

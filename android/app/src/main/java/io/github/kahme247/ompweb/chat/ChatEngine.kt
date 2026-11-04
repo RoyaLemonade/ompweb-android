@@ -919,13 +919,25 @@ class ChatEngine(
     private fun roundedRate(rate: Double?): Double? =
         rate?.let { (it * 10.0).roundToLong() / 10.0 }
 
+    /**
+     * The live stream reported a new epoch (`web.streamId`, e.g. a reconnect,
+     * a re-subscribe after the chat left the screen, or a server restart):
+     * every sequence floor and the whole live snapshot below describe the
+     * previous stream and must go.
+     *
+     * The committed transcript does NOT belong to the stream — it is the
+     * session file's history, and the reset request at the end reconciles it
+     * with the new epoch. Web parity: `useAgentSession-sync.ts` resets its
+     * stream state, never the messages. Emptying them blanked the chat for the
+     * whole reload; with no items to lay out, the transcript's lazy list drops
+     * its first visible item and repopulates at the top — the reader's scroll
+     * position was lost on every re-subscribe.
+     */
     private fun resetForEpoch() {
         coalescer.reset()
         resetStreamRate()
         _state.update {
             it.copy(
-                messages = emptyList(),
-                entryIds = emptyList(),
                 streaming = null,
                 streamingActive = false,
                 liveTokensPerSecond = null,
@@ -937,8 +949,10 @@ class ChatEngine(
                 agentPhase = null,
                 error = null,
                 runStartedAt = null,
+                // `messages`, `entryIds` and `historyLoaded` stay: the rows on
+                // screen are still this session's transcript, and the reload
+                // below replaces them when it lands.
                 historyLoading = true,
-                historyLoaded = false,
                 leafId = it.leafId,
             )
         }
