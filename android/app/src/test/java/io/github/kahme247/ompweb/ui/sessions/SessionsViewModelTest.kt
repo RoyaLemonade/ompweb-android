@@ -1263,8 +1263,10 @@ class SessionsViewModelTest {
 
         viewModel.togglePin("s1")
         assertEquals(emptySet<String>(), viewModel.state.value.pinnedIds)
-        waitFor("unpin persisted") { preferences.current.pinnedSessionsByOrigin.isEmpty() }
-        assertTrue("an empty pin list clears the origin entry", preferences.pinWrites.last().second.isEmpty())
+        // Waiting on the *record* (written after the state) avoids observing the
+        // state update before the write list has its entry.
+        waitFor("unpin persisted") { preferences.pinWrites.lastOrNull()?.second?.isEmpty() == true }
+        assertEquals(emptyMap<String, Set<String>>(), preferences.current.pinnedSessionsByOrigin)
     }
 
     @Test
@@ -1839,10 +1841,18 @@ class SessionsViewModelTest {
         /** Every state written through the last-view API, in order. */
         val lastViewWrites = java.util.Collections.synchronizedList(mutableListOf<SettingsSnapshot>())
 
-        /** A stored session marker, as the chat surface leaves it behind. */
+        /**
+         * A stored session marker, as the chat surface leaves it behind.
+         *
+         * The state is written *before* the call is recorded: a test that waits
+         * for `lastViewWrites`/`pinWrites` must never observe a write whose
+         * value is not in [current] yet (CI flake: the list was read on the
+         * test thread while the consumer had only appended the record).
+         */
         fun seedLastSession(sessionId: String) {
-            lastViewWrites += state.value.copy(lastSessionId = sessionId)
-            state.value = state.value.copy(lastSessionId = sessionId)
+            val next = state.value.copy(lastSessionId = sessionId)
+            state.value = next
+            lastViewWrites += next
         }
 
         override suspend fun setExpandedProjects(projects: Set<String>) {
@@ -1855,7 +1865,6 @@ class SessionsViewModelTest {
         }
 
         override suspend fun setPinnedSessions(origin: String, ids: Set<String>) {
-            pinWrites += origin to ids
             state.update {
                 it.copy(
                     pinnedSessionsByOrigin = it.pinnedSessionsByOrigin.toMutableMap().apply {
@@ -1863,13 +1872,15 @@ class SessionsViewModelTest {
                     },
                 )
             }
+            // Recorded after the state so a wait on the record implies the
+            // value is visible in [current] (see [seedLastSession]).
+            pinWrites += origin to ids
         }
 
         /** Every pin write, in order; the pin tests assert origin scoping. */
         val pinWrites = java.util.Collections.synchronizedList(mutableListOf<Pair<String, Set<String>>>())
 
         override suspend fun setPinnedProjects(origin: String, paths: List<String>) {
-            projectPinWrites += origin to paths
             state.update {
                 it.copy(
                     pinnedProjectsByOrigin = it.pinnedProjectsByOrigin.toMutableMap().apply {
@@ -1877,6 +1888,7 @@ class SessionsViewModelTest {
                     },
                 )
             }
+            projectPinWrites += origin to paths
         }
 
         /** Every project-pin write, in order; origin scoping is asserted. */
@@ -1884,7 +1896,6 @@ class SessionsViewModelTest {
             java.util.Collections.synchronizedList(mutableListOf<Pair<String, List<String>>>())
 
         override suspend fun setSessionFilters(origin: String, filters: SessionListFilter) {
-            filterWrites += origin to filters
             state.update {
                 it.copy(
                     sessionFiltersByOrigin = it.sessionFiltersByOrigin.toMutableMap().apply {
@@ -1892,6 +1903,7 @@ class SessionsViewModelTest {
                     },
                 )
             }
+            filterWrites += origin to filters
         }
 
         /** Every filter write, in order; the persistence test asserts origin scoping. */
@@ -1903,26 +1915,26 @@ class SessionsViewModelTest {
 
         override suspend fun setLastNewSessionView(cwd: String) {
             val next = state.value.copy(lastNewSessionCwd = cwd.takeIf { it.isNotBlank() }, lastSessionId = null)
-            lastViewWrites += next
             state.value = next
+            lastViewWrites += next
         }
 
         override suspend fun setLastSessionView(sessionId: String) {
             val next = state.value.copy(lastSessionId = sessionId.takeIf { it.isNotBlank() }, lastNewSessionCwd = null)
-            lastViewWrites += next
             state.value = next
+            lastViewWrites += next
         }
 
         override suspend fun clearLastNewSessionView() {
             val next = state.value.copy(lastNewSessionCwd = null)
-            lastViewWrites += next
             state.value = next
+            lastViewWrites += next
         }
 
         override suspend fun clearLastSession() {
             val next = state.value.copy(lastSessionId = null)
-            lastViewWrites += next
             state.value = next
+            lastViewWrites += next
         }
     }
 

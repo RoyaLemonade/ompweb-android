@@ -24,7 +24,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
@@ -32,7 +31,6 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
-import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -138,17 +136,18 @@ class SettingsViewModelTest {
          * `Dispatchers.Main` stays installed for the whole class: `viewModelScope`
          * dispatches continuations on it while a test tears down, and toggling it
          * per test makes that a "used concurrently with setting it" failure.
+         *
+         * It stays installed after the class too, like the sessions view-model
+         * tests do. A `resetMain()` here made the last test's still-unwinding
+         * coroutine resume after Main was missing; the resulting
+         * `CompletionHandlerException` was buffered by kotlinx-coroutines-test's
+         * global exception collector and failed the next `runTest` class with
+         * `UncaughtExceptionsBeforeTest` (CI flake at 1.0.40).
          */
         @BeforeClass
         @JvmStatic
         fun installMain() {
             Dispatchers.setMain(Dispatchers.Default)
-        }
-
-        @AfterClass
-        @JvmStatic
-        fun restoreMain() {
-            Dispatchers.resetMain()
         }
     }
 

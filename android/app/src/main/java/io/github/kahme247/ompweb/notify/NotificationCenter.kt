@@ -482,7 +482,19 @@ class NotificationCenter(
             presenceRetryJob = scope.launch { deliverPresence(report) }
             return
         }
-        scope.launch { api.reportPresence(report) }
+        scope.launch {
+            // Presence is a hint, never a hard dependency (the same rule as
+            // [reportPresenceNow] and `HttpNotificationsApi`): a refused POST
+            // must not escape as an uncaught coroutine exception that crashes
+            // the app (and, in the tests, the next `runTest` class).
+            try {
+                api.reportPresence(report)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The next window change or the keep-alive reports again.
+            }
+        }
     }
 
     /**

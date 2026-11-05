@@ -71,7 +71,6 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -135,7 +134,13 @@ class ChatViewModelTest {
     @After
     fun tearDown() {
         if (::vm.isInitialized) vm.viewModelScope.cancel()
-        Dispatchers.resetMain()
+        // Restore a real dispatcher instead of `resetMain()`: a continuation of
+        // the cancelled scope that resumes after the reset would be dispatched
+        // to a missing Main and surface as an uncaught `DispatchException` in a
+        // later test class (`UncaughtExceptionsBeforeTest`). Leaving Main on
+        // this test's scheduler is not an option either: the next `runTest`
+        // would adopt that abandoned scheduler.
+        Dispatchers.setMain(Dispatchers.Default)
     }
 
     /** Construct the VM and start collecting its one-shot events. */

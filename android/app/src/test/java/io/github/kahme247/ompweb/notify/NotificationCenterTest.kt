@@ -25,6 +25,7 @@ import io.github.kahme247.ompweb.net.ServerAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
@@ -34,6 +35,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -192,6 +194,15 @@ class NotificationCenterTest {
     )
 
     private fun idleMain(millis: Long) = shadowOf(Looper.getMainLooper()).idleFor(millis, TimeUnit.MILLISECONDS)
+
+    @After
+    fun tearDown() {
+        // The center and the settings store launch on this scope (collection
+        // loops, presence retries). Nothing may survive the test: an abandoned
+        // retry that fires during a later test would report through this test's
+        // fakes.
+        scope.cancel()
+    }
 
     private fun notificationFrame(
         kind: String,

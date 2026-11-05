@@ -369,6 +369,14 @@ class SessionActionsTest {
             projects.single().launchConfig?.profile == "fast" &&
                 projects.single().launchConfig?.advisor == true
         }
+        // The fake list is updated inside the PATCH handler, before the view
+        // model has finished its own action (the reload and the notice). Let
+        // the action complete first: its "Launch configuration saved" notice
+        // would otherwise land after the hide's notice on a slow runner and
+        // hide "Project hidden" from the wait below.
+        waitFor("launch config action finished") {
+            viewModel.state.value.notice?.text == "Launch configuration saved"
+        }
         val body = json.parseToJsonElement(launchBody.orEmpty()).jsonObject
         assertEquals("/work/x", body["cwd"]?.jsonPrimitive?.content)
         assertEquals("fast", body["launchConfig"]?.jsonObject?.get("profile")?.jsonPrimitive?.content)
