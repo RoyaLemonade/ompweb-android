@@ -6,6 +6,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -197,6 +198,9 @@ class SessionListUsageWarningTest {
         )
         composeRule.onNodeWithText(label).assertIsDisplayed()
         composeRule.onNodeWithText(value).assertIsDisplayed()
+        // The provider is named without turning the e-mail into the only identifier.
+        composeRule.onNodeWithText("AN").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("anthropic").assertIsDisplayed()
         // The full block is not duplicated into the list.
         composeRule.onNodeWithText("Provider usage").assertDoesNotExist()
         composeRule.onNodeWithText("Fix the Android sidebar layout").assertIsDisplayed()

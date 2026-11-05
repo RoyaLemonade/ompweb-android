@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.kahme247.ompweb.R
 import io.github.kahme247.ompweb.domain.providerUsageWarning
+import io.github.kahme247.ompweb.ui.settings.ProviderMarkerBadge
 import io.github.kahme247.ompweb.ui.settings.ProviderUsageSubscription
 import io.github.kahme247.ompweb.ui.settings.SettingsViewModel
 import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
@@ -54,6 +55,7 @@ internal fun ProviderUsageWarningRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        ProviderMarkerBadge(provider = warning.provider)
         Text(
             text = stringResource(R.string.sessions_usage_warning_label, warning.account),
             style = MaterialTheme.typography.labelMedium,

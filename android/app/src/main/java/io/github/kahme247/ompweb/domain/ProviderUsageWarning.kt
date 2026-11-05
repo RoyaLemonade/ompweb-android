@@ -37,6 +37,8 @@ fun providerUsageWorstWindow(report: ProviderUsageReport): Pair<String, Provider
  * never scroll out of view.
  */
 data class ProviderUsageWarning(
+    /** The provider id exactly as omp reported it; drives the badge. */
+    val provider: String,
     val account: String,
     val window: String,
     val percent: Int,
@@ -54,20 +56,24 @@ fun providerUsageWarning(
     reports: List<ProviderUsageReport>,
     threshold: Double = PROVIDER_USAGE_WARNING_PERCENT,
 ): ProviderUsageWarning? {
+    var bestProvider: String? = null
     var bestAccount: String? = null
     var bestWindow: String? = null
     var bestPercent = Double.NEGATIVE_INFINITY
     for (report in reports) {
         for ((short, window) in providerUsageWindows(report)) {
             if (window.percent < threshold || window.percent <= bestPercent) continue
+            bestProvider = report.provider
             bestAccount = providerUsageAccountLabel(report)
             bestWindow = short
             bestPercent = window.percent
         }
     }
+    val provider = bestProvider ?: return null
     val account = bestAccount ?: return null
     val window = bestWindow ?: return null
     return ProviderUsageWarning(
+        provider = provider,
         account = account,
         window = window,
         percent = Math.round(bestPercent).toInt(),

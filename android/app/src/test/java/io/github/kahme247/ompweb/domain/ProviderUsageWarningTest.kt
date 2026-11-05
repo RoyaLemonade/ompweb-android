@@ -54,7 +54,7 @@ class ProviderUsageWarningTest {
             ),
         )
         assertEquals(
-            ProviderUsageWarning(account = "work · Max", window = "7D", percent = 80),
+            ProviderUsageWarning(provider = "anthropic", account = "work · Max", window = "7D", percent = 80),
             warning,
         )
     }
@@ -81,7 +81,7 @@ class ProviderUsageWarningTest {
                 ),
             ),
         )
-        assertEquals(ProviderUsageWarning(account = "personal", window = "30D", percent = 92), warning)
+        assertEquals(ProviderUsageWarning(provider = "openai", account = "personal", window = "30D", percent = 92), warning)
     }
 
     @Test
@@ -101,7 +101,7 @@ class ProviderUsageWarningTest {
                 ),
             ),
         )
-        assertEquals(ProviderUsageWarning(account = "first", window = "5H", percent = 85), warning)
+        assertEquals(ProviderUsageWarning(provider = "anthropic", account = "first", window = "5H", percent = 85), warning)
     }
 
     @Test
@@ -160,7 +160,7 @@ class ProviderUsageWarningTest {
         )
         assertNull(providerUsageWarning(reports))
         assertEquals(
-            ProviderUsageWarning(account = "anthropic", window = "5H", percent = 55),
+            ProviderUsageWarning(provider = "anthropic", account = "anthropic", window = "5H", percent = 55),
             providerUsageWarning(reports, threshold = 50.0),
         )
     }

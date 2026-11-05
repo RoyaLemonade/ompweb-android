@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -176,11 +177,15 @@ private fun ProviderUsageRow(
                 .then(if (report.noLimits) Modifier else Modifier.clickable(onClick = onToggle))
                 .background(if (expanded) colors.backgroundSubtle else colors.panel),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            ProviderMarkerBadge(provider = report.provider)
             Text(
                 text = name,
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             if (report.noLimits) {

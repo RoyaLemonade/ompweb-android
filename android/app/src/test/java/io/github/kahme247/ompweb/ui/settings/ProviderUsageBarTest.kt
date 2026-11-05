@@ -1,8 +1,11 @@
 package io.github.kahme247.ompweb.ui.settings
 
 import android.content.Context
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
@@ -104,11 +107,65 @@ class ProviderUsageBarTest {
         composeRule.onNodeWithText(title).assertIsDisplayed()
         composeRule.onNodeWithText("work · Max").assertIsDisplayed()
         composeRule.onNodeWithText("5H 82%").assertIsDisplayed()
+        // The badge names the provider before the e-mail without widening the row.
+        composeRule.onNodeWithText("AN").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("anthropic").assertIsDisplayed()
 
         composeRule.onNodeWithText("work · Max").performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithText("7D").assertIsDisplayed()
         composeRule.onNodeWithText("41%").assertIsDisplayed()
+
+        // Tapping the badge spells out the provider id omp reported.
+        val provider = context.getString(R.string.provider_usage_badge_provider, "anthropic")
+        composeRule.onNodeWithContentDescription("anthropic").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText(provider).assertIsDisplayed()
+    }
+
+    @Test
+    fun aliasesOfOneProviderStayDistinguishable() {
+        val poller = ProviderUsagePoller(
+            load = {
+                ProviderUsageSnapshot(
+                    generatedAt = null,
+                    reports = listOf(
+                        ProviderUsageReport(
+                            provider = "commandcode-a",
+                            accountLabel = "work@example.com",
+                            plan = "Max",
+                            sevenDay = ProviderUsageWindow(percent = 41.0, resetHours = 30),
+                        ),
+                        ProviderUsageReport(
+                            provider = "commandcode-b",
+                            accountLabel = "home@example.com",
+                            plan = "Max",
+                            sevenDay = ProviderUsageWindow(percent = 12.0, resetHours = 30),
+                        ),
+                    ),
+                )
+            },
+            scope = scope,
+        )
+        val viewModel = SettingsViewModel(
+            system = ApiClient(OkHttpClient(), { null }).systemApi(),
+            settings = FakePrefs(),
+            poller = poller,
+        )
+
+        composeRule.setContent {
+            OmpWebTheme(themeId = ScreenshotMatrix.LIGHT_THEME_ID) {
+                ProviderUsageBar(viewModel = viewModel)
+            }
+        }
+        poller.refresh()
+        composeRule.waitForIdle()
+
+        composeRule.onAllNodesWithText("CC").assertCountEquals(2)
+        composeRule.onNodeWithText("a").assertIsDisplayed()
+        composeRule.onNodeWithText("b").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("commandcode-a").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("commandcode-b").assertIsDisplayed()
     }
 }

@@ -429,14 +429,14 @@ class ShellScreensScreenshotsTest : ScreenshotTest() {
             reports = listOf(
                 ProviderUsageReport(
                     provider = "anthropic",
-                    accountLabel = "work",
+                    accountLabel = "dev@example.com",
                     plan = "Max",
                     fiveHour = ProviderUsageWindow(percent = 82.0, resetHours = 2),
                     sevenDay = ProviderUsageWindow(percent = 41.0, resetHours = 30),
                 ),
                 ProviderUsageReport(
                     provider = "openai",
-                    accountLabel = "personal",
+                    accountLabel = "personal@example.com",
                     plan = "Plus",
                     fiveHour = ProviderUsageWindow(percent = 12.0, resetMinutes = 47),
                     sevenDay = ProviderUsageWindow(percent = 63.0, resetHours = 72),

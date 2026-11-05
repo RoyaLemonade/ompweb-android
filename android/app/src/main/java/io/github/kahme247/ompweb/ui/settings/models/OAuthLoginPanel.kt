@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.kahme247.ompweb.R
@@ -43,6 +44,7 @@ import io.github.kahme247.ompweb.net.ProviderAccount
 import io.github.kahme247.ompweb.ui.hosttools.openExternalUrl
 import io.github.kahme247.ompweb.ui.render.copyTextToClipboard
 import io.github.kahme247.ompweb.ui.settings.CopyableValue
+import io.github.kahme247.ompweb.ui.settings.ProviderMarkerBadge
 import io.github.kahme247.ompweb.ui.theme.LocalOmpColors
 
 /**
@@ -77,6 +79,7 @@ fun OAuthProviderDetail(
         onSelectOption = onSelectOption,
     )
     AccountsCard(
+        providerId = providerId,
         accounts = state.accounts,
         loading = state.accountsLoading,
         onRefresh = onRefreshAccounts,
@@ -131,6 +134,7 @@ fun ApiKeyDetail(
         ModelsHint(state.apiKeyGuidance ?: stringResource(R.string.models_api_key_guidance_fallback))
     }
     AccountsCard(
+        providerId = providerId,
         accounts = state.accounts,
         loading = state.accountsLoading,
         onRefresh = onRefresh,
@@ -347,6 +351,7 @@ private fun PasteSubmit(
 /** omp's stored accounts for one provider with the disconnect action. */
 @Composable
 fun AccountsCard(
+    providerId: String,
     accounts: ProviderAccounts?,
     loading: Boolean,
     onRefresh: () -> Unit,
@@ -373,14 +378,18 @@ fun AccountsCard(
             !accounts.supported -> ModelsHint(stringResource(R.string.models_accounts_unsupported))
             accounts.accounts.isEmpty() -> ModelsHint(stringResource(R.string.models_accounts_empty))
             else -> accounts.accounts.forEach { account ->
-                AccountRow(account = account, onDisconnect = { onDisconnect(account.credentialId) })
+                AccountRow(
+                    providerId = providerId,
+                    account = account,
+                    onDisconnect = { onDisconnect(account.credentialId) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun AccountRow(account: ProviderAccount, onDisconnect: () -> Unit) {
+private fun AccountRow(providerId: String, account: ProviderAccount, onDisconnect: () -> Unit) {
     val colors = LocalOmpColors.current
     var confirm by remember { mutableStateOf(false) }
     Row(
@@ -388,16 +397,26 @@ private fun AccountRow(account: ProviderAccount, onDisconnect: () -> Unit) {
             .fillMaxWidth()
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        ProviderMarkerBadge(provider = providerId)
         Column(Modifier.weight(1f)) {
             Text(
                 text = account.label.ifBlank { account.type },
                 color = colors.text,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (account.detail.isNotBlank()) {
-                Text(account.detail, color = colors.textMuted, fontSize = 11.sp)
+                Text(
+                    account.detail,
+                    color = colors.textMuted,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             Text(account.type, color = colors.textDim, fontSize = 10.sp)
         }
