@@ -117,9 +117,12 @@ fun orderProviderGroups(
     }
 }
 
-/** `providerInitials`: the first letter of up to two `-`/`_` separated parts. */
+/**
+ * The avatar text of a provider: the same identity the usage badge shows
+ * ([providerMarker] monogram plus alias letter, `commandcode-b` -> `CCb`), so
+ * one provider reads the same everywhere in the app.
+ */
 fun providerInitials(id: String): String {
-    val parts = id.split('-', '_').filter { it.isNotEmpty() }.take(2)
-    val initials = parts.mapNotNull { it.firstOrNull() }.joinToString("").uppercase()
-    return initials.ifEmpty { "?" }
+    val marker = providerMarker(id)
+    return marker.monogram + (marker.alias ?: "")
 }

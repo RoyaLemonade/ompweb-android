@@ -52,10 +52,11 @@ class ModelOptionsTest {
     }
 
     @Test
-    fun `provider initials take the first letter of up to two parts`() {
-        assertEquals("AP", providerInitials("acme-provider"))
-        assertEquals("MC", providerInitials("my_custom_gateway"))
-        assertEquals("P", providerInitials("provider"))
+    fun `provider initials match the usage badge identity`() {
+        assertEquals("CC", providerInitials("commandcode"))
+        assertEquals("CCb", providerInitials("commandcode-b"))
+        assertEquals("OA", providerInitials("openai-codex"))
+        assertEquals("AC", providerInitials("acme-provider"))
         assertEquals("?", providerInitials(""))
     }
 
