@@ -113,6 +113,12 @@ sealed interface ChatMessage {
         val text: String,
         val details: JsonObject? = null,
         val display: Boolean = true,
+        /**
+         * `attribution` of a live custom frame: omp marks the entries a user
+         * caused (`skill-prompt`) with `"user"`. The session file drops the
+         * field, so a page-delivered copy carries null.
+         */
+        val attribution: String? = null,
     ) : ChatMessage
 
     /** A role this phase does not render (e.g. an unknown extension message). */
@@ -179,8 +185,20 @@ data class AutoRetry(val attempt: Int?, val maxAttempts: Int?, val message: Stri
  */
 data class CompactResult(val reason: String, val tokensBefore: Long, val estimatedTokensAfter: Long)
 
-/** An optimistic user row that has not been committed by the server yet. */
-data class PendingUser(val text: String)
+/**
+ * An optimistic user row that has not been committed by the server yet.
+ *
+ * [priorEntryIds] is what proves the prompt arrived: the transcript entry ids
+ * the send started from. A user row carrying an id outside that set is the
+ * entry this send introduced — whatever text omp stored (a template or skill
+ * expansion rewrites it) and however far a long tool run pushes it down (web
+ * `runPreviousEntryIdsRef`). `null` means the transcript was not loaded yet, so
+ * only the typed text can be compared.
+ */
+data class PendingUser(
+    val text: String,
+    val priorEntryIds: Set<String>? = null,
+)
 
 /**
  * omp moved a chat to a copy because another process held the file

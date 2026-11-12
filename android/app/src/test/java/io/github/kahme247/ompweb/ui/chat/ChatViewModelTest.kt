@@ -280,6 +280,51 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `a send whose commit frame was lost stops saying Sending once the page has it`() = chatTest {
+        // The user's report: the prompt ran, the answer arrived, and the chat
+        // still said "Sending…" under the optimistic bubble. The commit frame
+        // (`message_end` for the user row) was lost to a reconnect or a
+        // backgrounded app, so only the context page can prove the prompt
+        // arrived — and the page puts the whole tool run of the turn behind it.
+        api.contextPage = page("s1", listOf(USER_FIRST, ASSISTANT_FIRST))
+        createViewModel()
+        vm.open("s1", null)
+        runCurrent()
+        assertTrue(vm.ui.value.engine.historyLoaded)
+
+        vm.send("hello")
+        runCurrent()
+        assertEquals("hello", vm.ui.value.engine.pendingUser?.text)
+
+        // The page the reload delivers holds the prompt, a long tool run and
+        // the answer; no user echo frame ever reached the app.
+        api.contextPage = page(
+            "s1",
+            listOf(
+                USER_FIRST,
+                ASSISTANT_FIRST,
+                USER_HELLO,
+                """{"role":"assistant","content":[{"type":"text","text":"working"}],""" +
+                    """"timestamp":1002,"stopReason":"toolUse"}""",
+                """{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":""" +
+                    """[{"type":"text","text":"one"}],"timestamp":1003}""",
+                """{"role":"toolResult","toolCallId":"t2","toolName":"bash","content":""" +
+                    """[{"type":"text","text":"two"}],"timestamp":1004}""",
+                ASSISTANT_HI,
+            ),
+        )
+        // The run ends with its frames lost; the terminal end asks for the reload.
+        emit("""{"type":"agent_end","isTerminal":true,"web":{"streamId":"A","sequence":20}}""")
+        runCurrent()
+
+        assertNull(
+            "the page proves the prompt was committed",
+            vm.ui.value.engine.pendingUser,
+        )
+        assertFalse("the composer is not left saying Sending…", vm.ui.value.submitPending)
+    }
+
+    @Test
     fun `a reopened chat reports its newest message, not the load time`() = chatTest {
         // The workspace paints this instant as the session's "last used" time;
         // without it the row would follow the file's mtime, which omp bumps on

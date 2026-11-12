@@ -181,6 +181,7 @@ internal fun parseChatMessage(
             text = contentText(message["content"]),
             details = message.obj("details"),
             display = message.bool("display") != false,
+            attribution = message.string("attribution"),
         )
         else -> {
             val role = message.string("role") ?: return null

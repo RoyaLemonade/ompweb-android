@@ -202,6 +202,182 @@ class ChatEngineSyncTest {
         assertTrue("the loaded answer settles the run", engine.state.value.notices.isEmpty())
     }
 
+    // --- the optimistic prompt row ("Sending…") -----------------------------
+
+    private fun custom(customType: String, content: String, details: String, timestamp: Long): String =
+        """{"role":"custom","customType":"$customType","content":"${content.replace("\"", "\\\"")}",""" +
+            """"details":$details,"timestamp":$timestamp}"""
+
+    /**
+     * The commit frame is what normally clears the optimistic row, but a
+     * reconnect, a backgrounded app or a lost frame leaves the context page as
+     * the only evidence. Its user row then sits behind the whole tool run of
+     * the turn, so a match over the page's last four rows never sees it and
+     * the chat keeps saying "Sending…" under a prompt that already ran.
+     */
+    @Test
+    fun `a page clears the pending row when the prompt sits behind a long tool run`() {
+        val engine = engine()
+        engine.setSession("s1")
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1", "e2"),
+                messages = listOf(user("earlier", 1), assistant("ok", 2, "stop")),
+            ),
+        )
+        engine.sendStarted("hello", runId = 1)
+        engine.drainEffects()
+
+        engine.applyContextPage(
+            page(
+                mode = "append",
+                baseEntryId = "e2",
+                entryIds = listOf("e3", "e4", "e5", "e6", "e7", "e8"),
+                messages = listOf(
+                    user("hello", 3),
+                    assistant("working", 4, "toolUse"),
+                    toolResult("t1", "one", 5),
+                    assistant("working", 6, "toolUse"),
+                    toolResult("t2", "two", 7),
+                    assistant("done", 8, "stop"),
+                ),
+            ),
+        )
+
+        assertNull("the prompt is in the transcript", engine.state.value.pendingUser)
+    }
+
+    /**
+     * omp expands a prompt template (and a skill) before it writes the user
+     * entry, so the stored text is not the typed text. The entry the send
+     * introduced is the identity that proves it arrived (web
+     * `runPreviousEntryIdsRef`).
+     */
+    @Test
+    fun `a page clears the pending row when omp stored an expanded prompt`() {
+        val engine = engine()
+        engine.setSession("s1")
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1", "e2"),
+                messages = listOf(user("earlier", 1), assistant("ok", 2, "stop")),
+            ),
+        )
+        engine.sendStarted("/plan ship it", runId = 1)
+
+        engine.applyContextPage(
+            page(
+                mode = "append",
+                baseEntryId = "e2",
+                entryIds = listOf("e3"),
+                messages = listOf(user("Prepare a plan for: ship it", 3)),
+            ),
+        )
+
+        assertNull("the expanded entry is this send", engine.state.value.pendingUser)
+    }
+
+    /**
+     * A skill invocation is written as a user-attributed `custom` entry, never
+     * as a user entry, so neither the text rule nor the user-row rule can see
+     * it (web `matchesNativeSkill`).
+     */
+    @Test
+    fun `an expanded skill clears the pending row`() {
+        val engine = engine()
+        engine.setSession("s1")
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1"),
+                messages = listOf(user("earlier", 1)),
+            ),
+        )
+        engine.sendStarted("/skill:demo do it", runId = 1)
+
+        // The echo arrives as a frame first: the chat must not wait for a page.
+        val echo = custom(
+            "skill-prompt",
+            "User invoked the \"demo\" skill",
+            """{"name":"demo","args":"do it","prompt":"/skill:demo do it"}""",
+            2,
+        )
+        engine.feed(obj("""{"type":"message_end","message":$echo}"""))
+
+        assertNull("the skill echo is this send", engine.state.value.pendingUser)
+    }
+
+    @Test
+    fun `a page without the prompt keeps the pending row`() {
+        val engine = engine()
+        engine.setSession("s1")
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1", "e2"),
+                messages = listOf(user("earlier", 1), assistant("ok", 2, "stop")),
+            ),
+        )
+        engine.sendStarted("hello", runId = 1)
+
+        // A reload of the same history: no user entry the send introduced.
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1", "e2"),
+                messages = listOf(user("earlier", 1), assistant("ok", 2, "stop")),
+            ),
+        )
+
+        assertEquals("nothing proves the prompt was committed", "hello", engine.state.value.pendingUser?.text)
+    }
+
+    /**
+     * A page that only names a previously blank assistant slot must not count
+     * as the send's entry: the boundary rule is about user rows, which is what
+     * a prompt writes.
+     */
+    @Test
+    fun `a page naming a frame-committed assistant row does not settle the prompt`() {
+        val engine = engine()
+        engine.setSession("s1")
+        engine.applyContextPage(
+            page(
+                mode = "replace",
+                baseEntryId = null,
+                entryIds = listOf("e1", "e2"),
+                messages = listOf(user("earlier", 1), assistant("ok", 2, "stop")),
+            ),
+        )
+        engine.sendStarted("hello", runId = 1)
+        // The answer streamed in before its user echo: a frame-committed row
+        // with no id yet.
+        engine.feed(obj("""{"type":"message_end","message":${assistant("answer", 3, "stop")}}"""))
+        assertEquals("the answer alone proves nothing", "hello", engine.state.value.pendingUser?.text)
+
+        engine.applyContextPage(
+            page(
+                mode = "append",
+                baseEntryId = "e2",
+                entryIds = listOf("e3"),
+                messages = listOf(assistant("answer", 3, "stop")),
+            ),
+        )
+
+        assertEquals(
+            "an assistant entry is not the prompt's entry",
+            "hello",
+            engine.state.value.pendingUser?.text,
+        )
+    }
+
     @Test
     fun `a connected frame asks for a catch-up without resetting the transcript`() {
         val engine = engine()

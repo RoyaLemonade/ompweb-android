@@ -211,14 +211,30 @@ class ChatEngine(
     /**
      * Start an optimistic prompt run. [command] marks a slash command, which
      * omp answers without a model turn (web `running_command`).
+     *
+     * The transcript on screen is recorded as the send's boundary: a user row
+     * whose entry id is not in it is this prompt's entry, see
+     * [PendingUser.priorEntryIds]. A transcript that is not loaded yet has no
+     * boundary — nothing on screen could be compared against it.
      */
-    fun sendStarted(text: String, runId: Long, command: Boolean = false) {
+    fun sendStarted(
+        text: String,
+        runId: Long,
+        command: Boolean = false,
+    ) {
         resetStreamRate()
         val snapshot = _state.value
         _state.value = snapshot.copy(
             runId = runId,
             runStartedAt = now(),
-            pendingUser = PendingUser(text),
+            pendingUser = PendingUser(
+                text = text,
+                priorEntryIds = if (snapshot.historyLoaded) {
+                    snapshot.entryIds.filterTo(HashSet()) { it.isNotEmpty() }
+                } else {
+                    null
+                },
+            ),
             agentRunning = true,
             promptRunning = true,
             streamingActive = false,
@@ -440,7 +456,7 @@ class ChatEngine(
                 pagesLoading = if (page.hasMore) it.pagesLoading else false,
                 historyError = null,
                 pendingUser = it.pendingUser?.takeUnless { pending ->
-                    messages.takeLast(4).any { row -> row is ChatMessage.User && row.text == pending.text }
+                    pending.settledBy(messages, entryIds)
                 },
                 liveTools = pruneCommittedTools(messages, it.liveTools),
                 todoPhases = if (it.agentRunning) it.todoPhases else page.todoPhases,
@@ -1196,12 +1212,18 @@ class ChatEngine(
             if (hasVisibleContent(parsed)) runHadContent = true
         }
         _state.update {
+            val messages = if (alreadyCommitted) it.messages else it.messages + parsed
             it.copy(
                 streaming = if (parsed is ChatMessage.Assistant) null else it.streaming,
                 streamingActive = if (parsed is ChatMessage.Assistant) false else it.streamingActive,
                 liveTokensPerSecond = if (parsed is ChatMessage.Assistant) null else it.liveTokensPerSecond,
-                messages = if (alreadyCommitted) it.messages else it.messages + parsed,
-                pendingUser = if (parsed is ChatMessage.User && it.pendingUser?.text == parsed.text) null else it.pendingUser,
+                messages = messages,
+                // The echo of this send: a plain prompt comes back as a user
+                // row with the typed text, a skill invocation as a
+                // `skill-prompt` entry (web `matchesNativeSkill`). A template
+                // expansion rewrites the text; the row it introduces is what
+                // proves that one, exactly as on a context page.
+                pendingUser = it.pendingUser?.takeUnless { pending -> pending.settledBy(messages, it.entryIds) },
                 liveTools = if (parsed is ChatMessage.ToolResult) {
                     it.liveTools.filterNot { tool -> tool.toolCallId == parsed.toolCallId }
                 } else it.liveTools,
@@ -1374,6 +1396,61 @@ internal fun ChatMessage.identity(): String = when (this) {
     is ChatMessage.Custom -> "custom:${customType}:${timestamp ?: key}"
     is ChatMessage.Other -> "other:$role:${timestamp ?: key}"
 }
+
+/**
+ * Whether this prompt is provably in the transcript the page just delivered
+ * (web: `runPreviousEntryIdsRef` plus the echo rules).
+ *
+ * Three signals, in the order they can be trusted:
+ * 1. a user row whose entry id is outside the send's boundary — the send
+ *    introduced it, whatever omp stored (a template or skill expansion rewrites
+ *    the text);
+ * 2. a user row with exactly the typed text — the echo of a plain prompt, which
+ *    may sit anywhere in the transcript (a long tool run pushes it far past the
+ *    last few rows);
+ * 3. a `skill-prompt` entry naming this skill, which omp writes instead of a
+ *    user row.
+ *
+ * A send without a boundary (a chat whose history was not loaded yet) falls
+ * back to the text rule alone: rows it cannot diff prove nothing. A row whose
+ * id the page left blank is a frame-committed row the page has not named yet;
+ * it proves nothing either way.
+ */
+internal fun PendingUser.settledBy(messages: List<ChatMessage>, entryIds: List<String>): Boolean {
+    val prior = priorEntryIds
+    if (prior != null) {
+        for (index in messages.indices) {
+            if (messages[index] !is ChatMessage.User) continue
+            val id = entryIds.getOrNull(index)
+            if (!id.isNullOrEmpty() && id !in prior) return true
+        }
+    }
+    if (messages.any { row -> row is ChatMessage.User && row.text == text }) return true
+    return messages.any { row -> row is ChatMessage.Custom && row.isSkillEchoOf(text) }
+}
+
+/**
+ * A skill invocation is stored as a `skill-prompt` entry: its `details.prompt`
+ * is the typed text, or (older omp) `details.name`/`args` name the skill the
+ * typed `/skill:<name>` asked for (web `matchesNativeSkill`). A live frame
+ * marks it `attribution: "user"`; the session file drops that field, so a page
+ * copy carries null.
+ */
+private fun ChatMessage.Custom.isSkillEchoOf(text: String): Boolean {
+    if (customType != "skill-prompt") return false
+    if (attribution != null && attribution != "user") return false
+    val typed = text.trim()
+    val prompt = details?.string("prompt")
+    if (prompt != null) return prompt.trim() == typed
+    val invocation = SKILL_INVOCATION.matchEntire(typed) ?: return false
+    val name = details?.string("name") ?: SKILL_NAME_IN_CONTENT.find(this.text)?.groupValues?.get(1) ?: return false
+    if (name != invocation.groupValues[1]) return false
+    val args = details?.string("args") ?: this.text.substringAfterLast("\nUser: ", "")
+    return args.trim() == invocation.groupValues[2].trim()
+}
+
+private val SKILL_INVOCATION = Regex("^/skill:(\\S+)(?:\\s+([\\s\\S]*))?$")
+private val SKILL_NAME_IN_CONTENT = Regex("""User invoked the "([^"]+)" skill""")
 
 /** Read an error out of omp's several payload shapes. */
 internal fun readAgentError(value: JsonElement?): String? {
